@@ -10,7 +10,7 @@ const app = express();
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // 🔐 Configuración principal
-const SHEET_ID = "TU_ID_DE_HOJA_DE_CALCULO"; // 👈 reemplaza por tu ID real de Google Sheets
+const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o"; // 👈 reemplaza por tu ID real de Google Sheets
 const SHEET_NAME = "Leads";
 
 // === Autenticación con Google ===
