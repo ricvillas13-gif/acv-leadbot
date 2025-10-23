@@ -1,3 +1,6 @@
+console.log("🔍 GOOGLE_SERVICE_ACCOUNT exists?", !!process.env.GOOGLE_SERVICE_ACCOUNT);
+console.log("🔍 Value length:", process.env.GOOGLE_SERVICE_ACCOUNT?.length);
+
 import express from "express";
 import bodyParser from "body-parser";
 import { google } from "googleapis";
