@@ -52,6 +52,11 @@ function makeTwiml(msg, mediaUrl) {
   return xml;
 }
 
+function replyXml(res, msg, mediaUrl) {
+  res.writeHead(200, { "Content-Type": "text/xml" });
+  res.end(makeTwiml(msg, mediaUrl));
+}
+
 // === FLUJO DE CONVERSACIÓN ===
 app.post("/", async (req, res) => {
   const body = req.body;
@@ -74,10 +79,7 @@ app.post("/", async (req, res) => {
     }
     state.data["Fotos"] = (state.data["Fotos"] || []).concat(urls);
     const reply = `📸 Recibidas ${urls.length} foto(s) de tu garantía.`;
-    return res
-      .status(200)
-      .set("Content-Type", "application/xml")
-      .send(makeTwiml(reply));
+    return replyXml(res, reply);
   }
 
   // === Paso 0: Bienvenida ===
@@ -89,32 +91,25 @@ app.post("/", async (req, res) => {
       "Por favor elige una opción:\n" +
       "1️⃣ Iniciar solicitud de crédito\n" +
       "2️⃣ Conocer información general";
-    return res
-      .status(200)
-      .set("Content-Type", "application/xml")
-      .send(
-        makeTwiml(
-          reply,
-          "https://drive.google.com/uc?export=view&id=1lnDmapOVPRlnDFTwXYj8y0pmUmw_rvqh"
-        )
-      );
+    return replyXml(
+      res,
+      reply,
+      "https://drive.google.com/uc?export=view&id=1lnDmapOVPRlnDFTwXYj8y0pmUmw_rvqh"
+    );
   }
 
   // === Paso 1: Menú inicial ===
   if (state.step === 1) {
     if (msg === "1" || msg.includes("solicitud")) {
       state.step = 2;
-      return res
-        .status(200)
-        .set("Content-Type", "application/xml")
-        .send(makeTwiml("¿Cuál es tu nombre completo?"));
+      return replyXml(res, "¿Cuál es tu nombre completo?");
     } else if (msg === "2" || msg.includes("información")) {
       const info =
         "💰 *Tasa:* 3.99% mensual sin comisión.\n" +
         "📅 *Plazo:* Desde 3 meses, sin penalización.\n" +
         "📋 *Requisitos:* Documentación básica y avalúo físico.\n\n" +
         "¿Deseas iniciar tu solicitud? (responde *Sí* o *No*)";
-      return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(info));
+      return replyXml(res, info);
     }
   }
 
@@ -122,10 +117,7 @@ app.post("/", async (req, res) => {
   if (state.step === 2) {
     state.data["Cliente"] = msg;
     state.step = 3;
-    return res
-      .status(200)
-      .set("Content-Type", "application/xml")
-      .send(makeTwiml("¿Cuál es el *monto solicitado*?"));
+    return replyXml(res, "¿Cuál es el *monto solicitado*?");
   }
 
   // === Paso 3: Monto ===
@@ -137,7 +129,7 @@ app.post("/", async (req, res) => {
       "1️⃣ Auto / Camión\n" +
       "2️⃣ Maquinaria pesada\n" +
       "3️⃣ Reloj de alta gama";
-    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(opciones));
+    return replyXml(res, opciones);
   }
 
   // === Paso 4: Garantía ===
@@ -155,7 +147,7 @@ app.post("/", async (req, res) => {
       "3️⃣ Referido\n" +
       "4️⃣ Búsqueda orgánica\n" +
       "5️⃣ Otro";
-    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(procedencia));
+    return replyXml(res, procedencia);
   }
 
   // === Paso 5: Procedencia ===
@@ -170,7 +162,7 @@ app.post("/", async (req, res) => {
     state.data["Procedencia del lead"] = opciones[msg] || msg;
     state.step = 6;
     const ubicacion = "¿En qué estado de la República te encuentras?";
-    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(ubicacion));
+    return replyXml(res, ubicacion);
   }
 
   // === Paso 6: Ubicación ===
@@ -178,7 +170,7 @@ app.post("/", async (req, res) => {
     state.data["Ubicación"] = msg;
     state.step = 7;
     const cita = "¿Qué día y hora te gustaría agendar tu cita?";
-    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(cita));
+    return replyXml(res, cita);
   }
 
   // === Paso 7: Cita ===
@@ -226,13 +218,14 @@ app.post("/", async (req, res) => {
         break;
     }
     state.step = 8;
-    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(fotosMsg));
+    return replyXml(res, fotosMsg);
   }
 
   // === Paso 8: Fotos ===
   if (state.step === 8 && state.data["Fotos"]?.length >= 4) {
     state.data["Etapa del cliente"] = "Completado";
-    const confirm = "✅ Gracias por enviar las fotos. Tu solicitud está lista para revisión.";
+    const confirm =
+      "✅ Gracias por enviar las fotos. Tu solicitud está lista para revisión.";
     await appendLeadRow([
       state.data["Fecha contacto"],
       state.data["Cliente"],
@@ -249,14 +242,11 @@ app.post("/", async (req, res) => {
       (state.data["Fotos"] || []).join("\n"),
     ]);
     delete sessionState[from];
-    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(confirm));
+    return replyXml(res, confirm);
   }
 
   // Respuesta por defecto
-  res
-    .status(200)
-    .set("Content-Type", "application/xml")
-    .send(makeTwiml("Por favor sigue las instrucciones anteriores."));
+  replyXml(res, "Por favor sigue las instrucciones anteriores.");
 });
 
 // === INICIO SERVIDOR ===
