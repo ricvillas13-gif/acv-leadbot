@@ -1,220 +1,265 @@
+// server.js
 import express from "express";
 import bodyParser from "body-parser";
 import { google } from "googleapis";
 
-// ===== CONFIGURACIÓN INICIAL =====
 const app = express();
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
-const SHEET_ID = process.env.GOOGLE_SHEET_ID; // ID real de la hoja "Leads"
+// === CONFIGURACIÓN ===
+const PORT = process.env.PORT || 10000;
+const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
 
-// Autenticación con Google
+// === AUTENTICACIÓN GOOGLE ===
+let creds;
+try {
+  console.log("🔍 Verificando variable GOOGLE_SERVICE_ACCOUNT...");
+  creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
+  console.log("✅ JSON parseado correctamente. Cliente de servicio listo.");
+} catch (err) {
+  console.error("❌ ERROR al parsear GOOGLE_SERVICE_ACCOUNT:", err);
+}
+
 const auth = new google.auth.GoogleAuth({
   credentials: creds,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 const sheets = google.sheets({ version: "v4", auth });
 
-// ===== ESTADOS TEMPORALES DE USUARIO =====
-const session = {};
+// === ESTADO TEMPORAL DE LEADS ===
+const sessionState = {}; // { phone: { step, data } }
 
-// ===== FLUJO DE PREGUNTAS =====
-const steps = [
-  "Cliente",
-  "Garantía",
-  "Monto solicitado",
-  "Procedencia de lead",
-  "Ubicación",
-  "Cita",
-  "Lugar",
-  "Fotos",
-];
-
-// ===== LISTAS =====
-const garantias = ["Auto", "Inmueble", "Maquinaria", "Reloj"];
-const procedencias = [
-  "Referido",
-  "Anuncio en línea",
-  "Evento",
-  "Búsqueda orgánica",
-  "Publicidad Facebook",
-  "Publicidad Instagram",
-  "Campaña WhatsApp",
-  "Formulario Facebook",
-  "Campaña Messenger",
-  "Ninguno",
-];
-const ubicaciones = [
-  "Aguascalientes", "Baja California", "Campeche", "CDMX", "Chiapas",
-  "Chihuahua", "Coahuila", "Colima", "Durango", "Estado de México",
-  "Guanajuato", "Guerrero", "Hidalgo", "Jalisco", "Michoacán",
-  "Morelos", "Nayarit", "Nuevo León", "Oaxaca", "Puebla", "Querétaro",
-  "Quintana Roo", "San Luis Potosí", "Sinaloa", "Sonora", "Tabasco",
-  "Tamaulipas", "Tlaxcala", "Veracruz", "Yucatán", "Zacatecas"
-];
-const lugares = ["Corporativo", "Patio de resguardo 1", "Patio de resguardo 2"];
-
-// ===== UTILIDADES =====
-function nextStep(phone) {
-  const current = session[phone]?.step || 0;
-  return steps[current];
-}
-function advanceStep(phone) {
-  session[phone].step++;
-}
-function resetSession(phone) {
-  session[phone] = { step: 0, data: {} };
-}
-
-// ===== TWILIO WEBHOOK =====
-app.post("/twilio", async (req, res) => {
+// === FUNCIONES AUXILIARES ===
+async function appendLeadRow(data) {
   try {
-    const from = req.body.From || "";
-    const body = (req.body.Body || "").trim();
-    const mediaCount = Number(req.body.NumMedia || 0);
-
-    if (!from) return res.type("text/xml").send("<Response><Message>Error: sin remitente.</Message></Response>");
-    if (!session[from]) resetSession(from);
-
-    const step = nextStep(from);
-    const data = session[from].data;
-
-    if (mediaCount > 0) {
-      data.Fotos = data.Fotos || [];
-      for (let i = 0; i < mediaCount; i++) {
-        data.Fotos.push(req.body[`MediaUrl${i}`]);
-      }
-      advanceStep(from);
-    } else {
-      switch (step) {
-        case "Cliente":
-          data.Cliente = body;
-          advanceStep(from);
-          break;
-        case "Garantía":
-          if (!garantias.includes(body)) {
-            return res
-              .type("text/xml")
-              .send(`<Response><Message>Selecciona una garantía: ${garantias.join(", ")}</Message></Response>`);
-          }
-          data.Garantía = body;
-          advanceStep(from);
-          break;
-        case "Monto solicitado":
-          data["Monto solicitado"] = body.replace(/[^\d.]/g, "");
-          advanceStep(from);
-          break;
-        case "Procedencia de lead":
-          if (!procedencias.includes(body)) {
-            return res
-              .type("text/xml")
-              .send(`<Response><Message>Selecciona una procedencia válida: ${procedencias.join(", ")}</Message></Response>`);
-          }
-          data["Procedencia de lead"] = body;
-          advanceStep(from);
-          break;
-        case "Ubicación":
-          if (!ubicaciones.includes(body)) {
-            return res
-              .type("text/xml")
-              .send(`<Response><Message>Selecciona un estado válido: ${ubicaciones.join(", ")}</Message></Response>`);
-          }
-          data.Ubicación = body;
-          advanceStep(from);
-          break;
-        case "Cita":
-          data.Cita = body;
-          advanceStep(from);
-          break;
-        case "Lugar":
-          if (!lugares.includes(body)) {
-            return res
-              .type("text/xml")
-              .send(`<Response><Message>Selecciona un lugar válido: ${lugares.join(", ")}</Message></Response>`);
-          }
-          data.Lugar = body;
-          advanceStep(from);
-          break;
-      }
-    }
-
-    // Si completó el flujo:
-    if (session[from].step >= steps.length) {
-      data["Fecha de contacto"] = new Date().toLocaleString("es-MX");
-      data["Etapa del cliente"] = "contacto inicial";
-      data["Responsable"] = "Bot";
-      data["Resultado final"] = "Pendiente";
-      data["Canal de contacto"] = "WhatsApp"; // 👈 nuevo campo automático
-
-      await sheets.spreadsheets.values.append({
-        spreadsheetId: SHEET_ID,
-        range: "Leads!A1",
-        valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [
-            [
-              data["Fecha de contacto"],
-              data.Cliente,
-              data.Garantía,
-              data["Monto solicitado"],
-              data["Procedencia de lead"],
-              data.Ubicación,
-              data.Cita,
-              data.Lugar,
-              data.Responsable,
-              data["Etapa del cliente"],
-              data["Resultado final"],
-              data["Canal de contacto"],
-              data.Fotos?.join(", ") || "",
-            ],
-          ],
-        },
-      });
-
-      resetSession(from);
-      return res
-        .type("text/xml")
-        .send(`<Response><Message>✅ Gracias ${data.Cliente}, registramos tu información correctamente.</Message></Response>`);
-    }
-
-    // Pregunta siguiente paso
-    const next = nextStep(from);
-    return res.type("text/xml").send(`<Response><Message>${promptFor(next)}</Message></Response>`);
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "Leads!A1",
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [data] },
+    });
+    console.log("✅ Lead guardado:", data[1]);
   } catch (err) {
-    console.error(err);
-    res.type("text/xml").send("<Response><Message>⚠️ Ocurrió un error en el bot.</Message></Response>");
-  }
-});
-
-// ===== FUNCIONES DE TEXTO =====
-function promptFor(step) {
-  switch (step) {
-    case "Cliente":
-      return "👋 Hola, ¿cómo te llamas?";
-    case "Garantía":
-      return `¿Qué tipo de garantía ofrecerías? (${garantias.join(", ")})`;
-    case "Monto solicitado":
-      return "¿Cuál es el monto que deseas solicitar?";
-    case "Procedencia de lead":
-      return `¿Cómo nos encontraste? (${procedencias.join(", ")})`;
-    case "Ubicación":
-      return `¿En qué estado de la República te encuentras?`;
-    case "Cita":
-      return "¿Qué día y hora te gustaría agendar una cita?";
-    case "Lugar":
-      return `¿Dónde prefieres la cita? (${lugares.join(", ")})`;
-    case "Fotos":
-      return "📸 Por favor, envíame 3 fotos de la garantía.";
-    default:
-      return "Gracias por tu interés. Te contactaremos pronto.";
+    console.error("❌ Error guardando Lead:", err);
   }
 }
 
-// ===== INICIO DEL SERVIDOR =====
-const PORT = process.env.PORT || 10000;
-app.get("/", (req, res) => {
-  res.send("✅ LeadBot ACV operativo y conectado a Google Sheets.");
+function makeTwiml(msg, mediaUrl) {
+  let xml = `<Response><Message>`;
+  if (mediaUrl) xml += `<Media>${mediaUrl}</Media>`;
+  xml += `${msg}</Message></Response>`;
+  return xml;
+}
+
+// === FLUJO DE CONVERSACIÓN ===
+app.post("/", async (req, res) => {
+  const body = req.body;
+  const from = body.From || "";
+  const msg = (body.Body || "").trim().toLowerCase();
+  const mediaCount = parseInt(body.NumMedia || "0");
+
+  console.log("📩 Mensaje recibido:", from, msg);
+
+  if (!sessionState[from]) sessionState[from] = { step: 0, data: {} };
+  const state = sessionState[from];
+
+  // --- Manejo de medios (fotos) ---
+  if (mediaCount > 0) {
+    const urls = [];
+    for (let i = 0; i < mediaCount; i++) {
+      const url = body[`MediaUrl${i}`];
+      const type = state.data["Garantía"] || "Foto";
+      urls.push(`Foto ${type} - ${url}`);
+    }
+    state.data["Fotos"] = (state.data["Fotos"] || []).concat(urls);
+    const reply = `📸 Recibidas ${urls.length} foto(s) de tu garantía.`;
+    return res
+      .status(200)
+      .set("Content-Type", "application/xml")
+      .send(makeTwiml(reply));
+  }
+
+  // === Paso 0: Bienvenida ===
+  if (state.step === 0 || msg.includes("hola")) {
+    state.step = 1;
+    const reply =
+      "👋 *Hola! Soy el asistente virtual de ACV*.\n" +
+      "¡Gracias por contactarnos!\n\n" +
+      "Por favor elige una opción:\n" +
+      "1️⃣ Iniciar solicitud de crédito\n" +
+      "2️⃣ Conocer información general";
+    return res
+      .status(200)
+      .set("Content-Type", "application/xml")
+      .send(
+        makeTwiml(
+          reply,
+          "https://drive.google.com/uc?export=view&id=1lnDmapOVPRlnDFTwXYj8y0pmUmw_rvqh"
+        )
+      );
+  }
+
+  // === Paso 1: Menú inicial ===
+  if (state.step === 1) {
+    if (msg === "1" || msg.includes("solicitud")) {
+      state.step = 2;
+      return res
+        .status(200)
+        .set("Content-Type", "application/xml")
+        .send(makeTwiml("¿Cuál es tu nombre completo?"));
+    } else if (msg === "2" || msg.includes("información")) {
+      const info =
+        "💰 *Tasa:* 3.99% mensual sin comisión.\n" +
+        "📅 *Plazo:* Desde 3 meses, sin penalización.\n" +
+        "📋 *Requisitos:* Documentación básica y avalúo físico.\n\n" +
+        "¿Deseas iniciar tu solicitud? (responde *Sí* o *No*)";
+      return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(info));
+    }
+  }
+
+  // === Paso 2: Nombre ===
+  if (state.step === 2) {
+    state.data["Cliente"] = msg;
+    state.step = 3;
+    return res
+      .status(200)
+      .set("Content-Type", "application/xml")
+      .send(makeTwiml("¿Cuál es el *monto solicitado*?"));
+  }
+
+  // === Paso 3: Monto ===
+  if (state.step === 3) {
+    state.data["Monto solicitado"] = msg;
+    state.step = 4;
+    const opciones =
+      "¿Qué tienes para dejar en garantía?\n" +
+      "1️⃣ Auto / Camión\n" +
+      "2️⃣ Maquinaria pesada\n" +
+      "3️⃣ Reloj de alta gama";
+    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(opciones));
+  }
+
+  // === Paso 4: Garantía ===
+  if (state.step === 4) {
+    if (msg.startsWith("1")) state.data["Garantía"] = "Auto";
+    else if (msg.startsWith("2")) state.data["Garantía"] = "Maquinaria";
+    else if (msg.startsWith("3")) state.data["Garantía"] = "Reloj";
+    else state.data["Garantía"] = msg;
+
+    state.step = 5;
+    const procedencia =
+      "¿Cómo te enteraste de nosotros?\n" +
+      "1️⃣ Facebook\n" +
+      "2️⃣ Instagram\n" +
+      "3️⃣ Referido\n" +
+      "4️⃣ Búsqueda orgánica\n" +
+      "5️⃣ Otro";
+    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(procedencia));
+  }
+
+  // === Paso 5: Procedencia ===
+  if (state.step === 5) {
+    const opciones = {
+      1: "Facebook",
+      2: "Instagram",
+      3: "Referido",
+      4: "Búsqueda orgánica",
+      5: "Otro",
+    };
+    state.data["Procedencia del lead"] = opciones[msg] || msg;
+    state.step = 6;
+    const ubicacion = "¿En qué estado de la República te encuentras?";
+    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(ubicacion));
+  }
+
+  // === Paso 6: Ubicación ===
+  if (state.step === 6) {
+    state.data["Ubicación"] = msg;
+    state.step = 7;
+    const cita = "¿Qué día y hora te gustaría agendar tu cita?";
+    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(cita));
+  }
+
+  // === Paso 7: Cita ===
+  if (state.step === 7) {
+    state.data["Cita"] = msg;
+    state.data["Fecha contacto"] = new Date().toLocaleString("es-MX");
+    state.data["Responsable"] = "Bot ACV";
+    state.data["Etapa del cliente"] = "Esperando fotos";
+
+    // Guardamos en Google Sheets
+    const row = [
+      state.data["Fecha contacto"],
+      state.data["Cliente"],
+      state.data["Garantía"],
+      state.data["Monto solicitado"],
+      state.data["Procedencia del lead"],
+      state.data["Ubicación"],
+      state.data["Etapa del cliente"],
+      state.data["Cita"],
+      "",
+      state.data["Responsable"],
+      "",
+      "",
+      "",
+    ];
+    await appendLeadRow(row);
+
+    // Mensaje con instrucciones de fotos según garantía
+    let fotosMsg = "";
+    switch (state.data["Garantía"]) {
+      case "Auto":
+        fotosMsg =
+          "🚗 Por favor envíame 4 fotos de tu vehículo:\n" +
+          "1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Tablero (km)\n4️⃣ Placa de circulación";
+        break;
+      case "Maquinaria":
+        fotosMsg =
+          "🏗️ Envía 4 fotos de tu maquinaria:\n" +
+          "1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Horas de uso\n4️⃣ VIN o serie";
+        break;
+      case "Reloj":
+        fotosMsg =
+          "⌚ Envía 4 fotos de tu reloj:\n" +
+          "1️⃣ Carátula\n2️⃣ Pulso\n3️⃣ Corona\n4️⃣ Broche";
+        break;
+    }
+    state.step = 8;
+    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(fotosMsg));
+  }
+
+  // === Paso 8: Fotos ===
+  if (state.step === 8 && state.data["Fotos"]?.length >= 4) {
+    state.data["Etapa del cliente"] = "Completado";
+    const confirm = "✅ Gracias por enviar las fotos. Tu solicitud está lista para revisión.";
+    await appendLeadRow([
+      state.data["Fecha contacto"],
+      state.data["Cliente"],
+      state.data["Garantía"],
+      state.data["Monto solicitado"],
+      state.data["Procedencia del lead"],
+      state.data["Ubicación"],
+      state.data["Etapa del cliente"],
+      state.data["Cita"],
+      "",
+      state.data["Responsable"],
+      "Pendiente de revisión",
+      "",
+      (state.data["Fotos"] || []).join("\n"),
+    ]);
+    delete sessionState[from];
+    return res.status(200).set("Content-Type", "application/xml").send(makeTwiml(confirm));
+  }
+
+  // Respuesta por defecto
+  res
+    .status(200)
+    .set("Content-Type", "application/xml")
+    .send(makeTwiml("Por favor sigue las instrucciones anteriores."));
 });
-app.listen(PORT, () => console.log(`🚀 Servidor activo en el puerto ${PORT}`));
+
+// === INICIO SERVIDOR ===
+app.listen(PORT, () => {
+  console.log(`🚀 LeadBot ACV ejecutándose en el puerto ${PORT}`);
+});
