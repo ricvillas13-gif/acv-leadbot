@@ -1,17 +1,16 @@
-// server.js
 import express from "express";
 import bodyParser from "body-parser";
 import { google } from "googleapis";
+import he from "he"; // escapador HTML seguro
 
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-// === CONFIGURACIÓN ===
 const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
 
-// === AUTENTICACIÓN GOOGLE ===
+// === GOOGLE AUTH ===
 let creds;
 try {
   console.log("🔍 Verificando variable GOOGLE_SERVICE_ACCOUNT...");
@@ -27,10 +26,24 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: "v4", auth });
 
-// === ESTADO TEMPORAL DE LEADS ===
-const sessionState = {}; // { phone: { step, data } }
+// === SESIONES ===
+const sessionState = {};
 
-// === FUNCIONES AUXILIARES ===
+// === UTILS ===
+function xmlEscape(str) {
+  return he.encode(str || "", { useNamedReferences: true });
+}
+
+function replyXml(res, message, mediaUrl = null) {
+  let xml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>';
+  xml += `<Body>${xmlEscape(message)}</Body>`;
+  if (mediaUrl) xml += `<Media>${xmlEscape(mediaUrl)}</Media>`;
+  xml += "</Message></Response>";
+
+  res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
+  res.end(xml);
+}
+
 async function appendLeadRow(data) {
   try {
     await sheets.spreadsheets.values.append({
@@ -45,19 +58,7 @@ async function appendLeadRow(data) {
   }
 }
 
-function makeTwiml(msg, mediaUrl) {
-  let xml = `<Response><Message>`;
-  if (mediaUrl) xml += `<Media>${mediaUrl}</Media>`;
-  xml += `${msg}</Message></Response>`;
-  return xml;
-}
-
-function replyXml(res, msg, mediaUrl) {
-  res.writeHead(200, { "Content-Type": "text/xml" });
-  res.end(makeTwiml(msg, mediaUrl));
-}
-
-// === FLUJO DE CONVERSACIÓN ===
+// === FLUJO ===
 app.post("/", async (req, res) => {
   const body = req.body;
   const from = body.From || "";
@@ -69,26 +70,25 @@ app.post("/", async (req, res) => {
   if (!sessionState[from]) sessionState[from] = { step: 0, data: {} };
   const state = sessionState[from];
 
-  // --- Manejo de medios (fotos) ---
+  // === MEDIOS ===
   if (mediaCount > 0) {
     const urls = [];
     for (let i = 0; i < mediaCount; i++) {
       const url = body[`MediaUrl${i}`];
-      const type = state.data["Garantía"] || "Foto";
-      urls.push(`Foto ${type} - ${url}`);
+      const tipo = state.data["Garantía"] || "Foto";
+      urls.push(`${tipo} - ${url}`);
     }
     state.data["Fotos"] = (state.data["Fotos"] || []).concat(urls);
-    const reply = `📸 Recibidas ${urls.length} foto(s) de tu garantía.`;
-    return replyXml(res, reply);
+    return replyXml(res, `📸 Recibidas ${urls.length} foto(s)`);
   }
 
-  // === Paso 0: Bienvenida ===
+  // === PASO 0 ===
   if (state.step === 0 || msg.includes("hola")) {
     state.step = 1;
     const reply =
-      "👋 *Hola! Soy el asistente virtual de ACV*.\n" +
-      "¡Gracias por contactarnos!\n\n" +
-      "Por favor elige una opción:\n" +
+      "Hola, soy el asistente virtual de ACV.\n" +
+      "Gracias por contactarnos.\n\n" +
+      "Selecciona una opción:\n" +
       "1️⃣ Iniciar solicitud de crédito\n" +
       "2️⃣ Conocer información general";
     return replyXml(
@@ -98,41 +98,39 @@ app.post("/", async (req, res) => {
     );
   }
 
-  // === Paso 1: Menú inicial ===
+  // === PASO 1 ===
   if (state.step === 1) {
     if (msg === "1" || msg.includes("solicitud")) {
       state.step = 2;
       return replyXml(res, "¿Cuál es tu nombre completo?");
     } else if (msg === "2" || msg.includes("información")) {
       const info =
-        "💰 *Tasa:* 3.99% mensual sin comisión.\n" +
-        "📅 *Plazo:* Desde 3 meses, sin penalización.\n" +
-        "📋 *Requisitos:* Documentación básica y avalúo físico.\n\n" +
-        "¿Deseas iniciar tu solicitud? (responde *Sí* o *No*)";
+        "💰 Tasa: 3.99% mensual sin comisión.\n" +
+        "📅 Plazo: Desde 3 meses, sin penalización.\n" +
+        "📋 Requisitos: Documentación básica y avalúo físico.\n\n" +
+        "¿Deseas iniciar tu solicitud? (responde Sí o No)";
       return replyXml(res, info);
     }
   }
 
-  // === Paso 2: Nombre ===
+  // === PASO 2 ===
   if (state.step === 2) {
     state.data["Cliente"] = msg;
     state.step = 3;
-    return replyXml(res, "¿Cuál es el *monto solicitado*?");
+    return replyXml(res, "¿Cuál es el monto solicitado?");
   }
 
-  // === Paso 3: Monto ===
+  // === PASO 3 ===
   if (state.step === 3) {
     state.data["Monto solicitado"] = msg;
     state.step = 4;
-    const opciones =
-      "¿Qué tienes para dejar en garantía?\n" +
-      "1️⃣ Auto / Camión\n" +
-      "2️⃣ Maquinaria pesada\n" +
-      "3️⃣ Reloj de alta gama";
-    return replyXml(res, opciones);
+    return replyXml(
+      res,
+      "¿Qué tienes para dejar en garantía?\n1️⃣ Auto / Camión\n2️⃣ Maquinaria pesada\n3️⃣ Reloj de alta gama"
+    );
   }
 
-  // === Paso 4: Garantía ===
+  // === PASO 4 ===
   if (state.step === 4) {
     if (msg.startsWith("1")) state.data["Garantía"] = "Auto";
     else if (msg.startsWith("2")) state.data["Garantía"] = "Maquinaria";
@@ -140,17 +138,13 @@ app.post("/", async (req, res) => {
     else state.data["Garantía"] = msg;
 
     state.step = 5;
-    const procedencia =
-      "¿Cómo te enteraste de nosotros?\n" +
-      "1️⃣ Facebook\n" +
-      "2️⃣ Instagram\n" +
-      "3️⃣ Referido\n" +
-      "4️⃣ Búsqueda orgánica\n" +
-      "5️⃣ Otro";
-    return replyXml(res, procedencia);
+    return replyXml(
+      res,
+      "¿Cómo te enteraste de nosotros?\n1️⃣ Facebook\n2️⃣ Instagram\n3️⃣ Referido\n4️⃣ Búsqueda orgánica\n5️⃣ Otro"
+    );
   }
 
-  // === Paso 5: Procedencia ===
+  // === PASO 5 ===
   if (state.step === 5) {
     const opciones = {
       1: "Facebook",
@@ -161,26 +155,23 @@ app.post("/", async (req, res) => {
     };
     state.data["Procedencia del lead"] = opciones[msg] || msg;
     state.step = 6;
-    const ubicacion = "¿En qué estado de la República te encuentras?";
-    return replyXml(res, ubicacion);
+    return replyXml(res, "¿En qué estado de la República te encuentras?");
   }
 
-  // === Paso 6: Ubicación ===
+  // === PASO 6 ===
   if (state.step === 6) {
     state.data["Ubicación"] = msg;
     state.step = 7;
-    const cita = "¿Qué día y hora te gustaría agendar tu cita?";
-    return replyXml(res, cita);
+    return replyXml(res, "¿Qué día y hora te gustaría agendar tu cita?");
   }
 
-  // === Paso 7: Cita ===
+  // === PASO 7 ===
   if (state.step === 7) {
     state.data["Cita"] = msg;
     state.data["Fecha contacto"] = new Date().toLocaleString("es-MX");
     state.data["Responsable"] = "Bot ACV";
     state.data["Etapa del cliente"] = "Esperando fotos";
 
-    // Guardamos en Google Sheets
     const row = [
       state.data["Fecha contacto"],
       state.data["Cliente"],
@@ -198,34 +189,28 @@ app.post("/", async (req, res) => {
     ];
     await appendLeadRow(row);
 
-    // Mensaje con instrucciones de fotos según garantía
     let fotosMsg = "";
     switch (state.data["Garantía"]) {
       case "Auto":
         fotosMsg =
-          "🚗 Por favor envíame 4 fotos de tu vehículo:\n" +
-          "1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Tablero (km)\n4️⃣ Placa de circulación";
+          "Envía 4 fotos de tu vehículo:\n1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Tablero (km)\n4️⃣ Placa";
         break;
       case "Maquinaria":
         fotosMsg =
-          "🏗️ Envía 4 fotos de tu maquinaria:\n" +
-          "1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Horas de uso\n4️⃣ VIN o serie";
+          "Envía 4 fotos de tu maquinaria:\n1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Horas de uso\n4️⃣ VIN o serie";
         break;
       case "Reloj":
         fotosMsg =
-          "⌚ Envía 4 fotos de tu reloj:\n" +
-          "1️⃣ Carátula\n2️⃣ Pulso\n3️⃣ Corona\n4️⃣ Broche";
+          "Envía 4 fotos de tu reloj:\n1️⃣ Carátula\n2️⃣ Pulso\n3️⃣ Corona\n4️⃣ Broche";
         break;
     }
     state.step = 8;
     return replyXml(res, fotosMsg);
   }
 
-  // === Paso 8: Fotos ===
-  if (state.step === 8 && state.data["Fotos"]?.length >= 4) {
+  // === PASO 8 ===
+  if (state.step === 8 && (state.data["Fotos"]?.length || 0) >= 4) {
     state.data["Etapa del cliente"] = "Completado";
-    const confirm =
-      "✅ Gracias por enviar las fotos. Tu solicitud está lista para revisión.";
     await appendLeadRow([
       state.data["Fecha contacto"],
       state.data["Cliente"],
@@ -242,14 +227,18 @@ app.post("/", async (req, res) => {
       (state.data["Fotos"] || []).join("\n"),
     ]);
     delete sessionState[from];
-    return replyXml(res, confirm);
+    return replyXml(res, "✅ Gracias, tu solicitud ha sido registrada.");
   }
 
-  // Respuesta por defecto
-  replyXml(res, "Por favor sigue las instrucciones anteriores.");
+  return replyXml(res, "Por favor continúa con las instrucciones anteriores.");
 });
 
-// === INICIO SERVIDOR ===
+// Ruta de test
+app.get("/", (req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("✅ LeadBot ACV operativo.");
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 LeadBot ACV ejecutándose en el puerto ${PORT}`);
 });
