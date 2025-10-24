@@ -31,11 +31,18 @@ const sessionState = {};
 
 // === UTILS ===
 function xmlEscape(str) {
-  return he.encode(str || "", { useNamedReferences: true });
+  // Codifica usando referencias decimales (válidas para XML)
+  const safe = he.encode(str || "", {
+    useNamedReferences: false,
+    decimal: true,
+  });
+  // Además, elimina caracteres de control invisibles
+  return safe.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
 }
 
 function replyXml(res, message, mediaUrl = null) {
-  let xml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>';
+  let xml =
+    '<?xml version="1.0" encoding="UTF-8"?><Response><Message>';
   xml += `<Body>${xmlEscape(message)}</Body>`;
   if (mediaUrl) xml += `<Media>${xmlEscape(mediaUrl)}</Media>`;
   xml += "</Message></Response>";
@@ -235,7 +242,7 @@ app.post("/", async (req, res) => {
 
 // Ruta de test
 app.get("/", (req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
   res.end("✅ LeadBot ACV operativo.");
 });
 
