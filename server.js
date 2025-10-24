@@ -35,14 +35,15 @@ function xmlEscape(str) {
   return he.encode(str || "", { useNamedReferences: true });
 }
 
+// ✅ FUNCIÓN XML CORREGIDA (evita error 12200)
 function replyXml(res, message, mediaUrl = null) {
-  let xml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>';
-  xml += `<Body>${xmlEscape(message)}</Body>`;
-  if (mediaUrl) xml += `<Media>${xmlEscape(mediaUrl)}</Media>`;
-  xml += "</Message></Response>";
+  const safeMessage = he.encode(message || "", { useNamedReferences: true });
+  let xml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n<Message>\n<Body>${safeMessage}</Body>`;
+  if (mediaUrl) xml += `\n<Media>${he.encode(mediaUrl)}</Media>`;
+  xml += "\n</Message>\n</Response>";
 
-  res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
-  res.end(xml);
+  res.set("Content-Type", "application/xml; charset=utf-8");
+  res.status(200).send(xml.trim());
 }
 
 // === FUNCIONES GOOGLE SHEETS ===
@@ -101,8 +102,8 @@ app.post("/", async (req, res) => {
   if (!sessionState[from]) sessionState[from] = { step: 0, data: {} };
   const state = sessionState[from];
 
-  // === COMANDO GLOBAL ===
-  if (msgLower === "menu" || msgLower === "inicio" || msgLower === "hola") {
+  // === COMANDOS GLOBALES ===
+  if (["menu", "inicio", "hola"].includes(msgLower)) {
     state.step = 1;
     const reply =
       "👋 Hola, soy el asistente virtual de *ACV*.\n\n" +
