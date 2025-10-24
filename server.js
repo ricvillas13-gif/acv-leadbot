@@ -1,14 +1,12 @@
-
 import express from "express";
 import bodyParser from "body-parser";
 import { google } from "googleapis";
 import he from "he";
 import * as chrono from "chrono-node";
 
-const app = express();
-app.use(bodyParser.urlencoded({ extended: false }));
-app.use(bodyParser.json());
+const app = express(); // ✅ primero inicializas Express
 
+// ✅ Servir la carpeta "public" con MIME forzado correcto
 app.use(
   express.static("public", {
     setHeaders: (res, path) => {
@@ -20,6 +18,11 @@ app.use(
     },
   })
 );
+
+// ✅ Luego el resto de middlewares
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+
 
 const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
