@@ -1,5 +1,3 @@
-// ✅ Servir la carpeta public
-app.use(express.static("public"));
 
 import express from "express";
 import bodyParser from "body-parser";
@@ -10,6 +8,7 @@ import * as chrono from "chrono-node";
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+app.use(express.static("public"));
 
 const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
