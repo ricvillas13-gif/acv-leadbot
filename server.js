@@ -28,7 +28,7 @@ const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
 const LEADS_SHEET = "Leads";
 const CONFIG_SHEET = "Configuración";
-const LOBO_IMG = "https://leadbot-acv.onrender.com/Logo-ACV-Transparente.png";
+const LOBO_IMG = "https://leadbot-acv.onrender.com/logo-acv-transparente.png";
 
 // === GOOGLE AUTH ===
 let creds;
