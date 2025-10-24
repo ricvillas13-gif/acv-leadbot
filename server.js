@@ -1,3 +1,6 @@
+// ✅ Servir la carpeta public
+app.use(express.static("public"));
+
 import express from "express";
 import bodyParser from "body-parser";
 import { google } from "googleapis";
