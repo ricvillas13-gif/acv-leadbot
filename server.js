@@ -100,7 +100,9 @@ function parseYear(text) {
 
 function parseDateTime(text) {
   const result = chrono.parseDate(text, new Date(), { forwardDate: true });
-  return result ? result.toLocaleString("es-MX", { timeZone: "America/Mexico_City" }) : null;
+  return result
+    ? result.toLocaleString("es-MX", { timeZone: "America/Mexico_City" })
+    : null;
 }
 
 // Filtros de calificación – reglas simples
@@ -147,11 +149,7 @@ function isAffirmative(text) {
 
 function isNegative(text) {
   const t = (text || "").toLowerCase();
-  return (
-    t.includes("no") ||
-    t.includes("nel") ||
-    t.includes("negativo")
-  );
+  return t.includes("no") || t.includes("nel") || t.includes("negativo");
 }
 
 const ALLOWED_IMAGE_TYPES = [
@@ -159,13 +157,13 @@ const ALLOWED_IMAGE_TYPES = [
   "image/jpg",
   "image/png",
   "image/gif",
-  "image/heic"
+  "image/heic",
 ];
 
 // === FLUJO PRINCIPAL ===
 app.post("/", async (req, res) => {
   const body = req.body;
-  const from = body.From || "";          // número de WhatsApp/SMS
+  const from = body.From || ""; // número de WhatsApp/SMS
   const msg = (body.Body || "").trim();
   const msgLower = msg.toLowerCase();
   const mediaCount = parseInt(body.NumMedia || "0", 10);
@@ -269,9 +267,8 @@ app.post("/", async (req, res) => {
       // Ya tiene 4 o más fotos → cerrar y guardar fila completada
       state.data.etapa = "Completado";
 
-      const fotosFormulas = (state.data.fotos || []).map((url, idx) =>
-        `=HYPERLINK("${url}","Foto ${idx + 1}")`
-      );
+      // Guardar las URLs tal cual, una por línea (sin fórmulas)
+      const fotosTexto = (state.data.fotos || []).join("\n");
 
       const row = [
         state.data.celular || from,
@@ -283,9 +280,9 @@ app.post("/", async (req, res) => {
         state.data.etapa || "Completado",
         state.data.fechaContacto || nowMX(),
         state.data.responsable || "Bot ACV",
-        fotosFormulas.join("\n"),
+        fotosTexto, // URLs en texto simple
         "", // Resultado final
-        ""  // Observaciones
+        "", // Observaciones
       ];
       await appendLeadRow(row);
       delete sessionState[from];
@@ -320,7 +317,11 @@ app.post("/", async (req, res) => {
 
   // === MENÚ PRINCIPAL (step 1) ===
   if (state.step === 1) {
-    if (msgLower === "1" || msgLower.includes("crédito") || msgLower.includes("solicitud")) {
+    if (
+      msgLower === "1" ||
+      msgLower.includes("crédito") ||
+      msgLower.includes("solicitud")
+    ) {
       const existing = await getExistingLeads();
       if (existing.includes(from)) {
         return replyXml(
@@ -343,7 +344,11 @@ app.post("/", async (req, res) => {
       );
     }
 
-    if (msgLower === "2" || msgLower.includes("requisito") || msgLower.includes("información")) {
+    if (
+      msgLower === "2" ||
+      msgLower.includes("requisito") ||
+      msgLower.includes("información")
+    ) {
       state.flow = "requisitos";
       state.step = 10;
       return replyXml(
@@ -364,7 +369,11 @@ app.post("/", async (req, res) => {
       );
     }
 
-    if (msgLower === "3" || msgLower.includes("asesor") || msgLower.includes("humano")) {
+    if (
+      msgLower === "3" ||
+      msgLower.includes("asesor") ||
+      msgLower.includes("humano")
+    ) {
       state.flow = "asesor";
       state.step = 20;
       return replyXml(
@@ -439,7 +448,7 @@ app.post("/", async (req, res) => {
         state.data.responsable,
         "", // fotos
         "", // resultado final
-        ""  // observaciones
+        "", // observaciones
       ];
       await appendLeadRow(row);
       delete sessionState[from];
@@ -457,7 +466,10 @@ app.post("/", async (req, res) => {
     // Comandos de corrección dentro del flujo
     if (msgLower === "monto") {
       state.step = 4;
-      return replyXml(res, "Claro 👍 indícame nuevamente el monto que necesitas.");
+      return replyXml(
+        res,
+        "Claro 👍 indícame nuevamente el monto que necesitas."
+      );
     }
     if (msgLower === "garantia" || msgLower === "garantía") {
       state.step = 2;
@@ -476,7 +488,10 @@ app.post("/", async (req, res) => {
     }
     if (msgLower === "ciudad") {
       state.step = 7;
-      return replyXml(res, "Indícame de nuevo la ciudad o estado donde te encuentras.");
+      return replyXml(
+        res,
+        "Indícame de nuevo la ciudad o estado donde te encuentras."
+      );
     }
     if (msgLower === "fotos") {
       state.step = 8;
@@ -617,10 +632,7 @@ app.post("/", async (req, res) => {
     if (state.step === 6) {
       state.data.nombre = msg;
       state.step = 7;
-      return replyXml(
-        res,
-        "¿En qué ciudad o estado te encuentras?"
-      );
+      return replyXml(res, "¿En qué ciudad o estado te encuentras?");
     }
 
     // Paso 7 – Ubicación y guardado inicial del lead (Precalificado)
@@ -643,7 +655,7 @@ app.post("/", async (req, res) => {
         state.data.responsable,
         "", // fotos
         "", // resultado final
-        ""  // observaciones
+        "", // observaciones
       ];
       await appendLeadRow(row);
 
