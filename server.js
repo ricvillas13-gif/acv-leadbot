@@ -30,6 +30,13 @@ const sheets = google.sheets({ version: "v4", auth });
 // === SESIONES EN MEMORIA ===
 const sessionState = {};
 
+// === UTILIDADES DE FECHA (HUSO MX) ===
+function nowMX() {
+  return new Date().toLocaleString("es-MX", {
+    timeZone: "America/Mexico_City",
+  });
+}
+
 // === UTILIDAD XML SEGURA ===
 function replyXml(res, message, mediaUrl = null) {
   const xmlObj = {
@@ -93,7 +100,7 @@ function parseYear(text) {
 
 function parseDateTime(text) {
   const result = chrono.parseDate(text, new Date(), { forwardDate: true });
-  return result ? result.toLocaleString("es-MX") : null;
+  return result ? result.toLocaleString("es-MX", { timeZone: "America/Mexico_City" }) : null;
 }
 
 // Filtros de calificación – reglas simples
@@ -103,7 +110,7 @@ function isYearValid(tipo, year) {
     return year >= 2010;
   }
   if (tipo === "Reloj") {
-    return year >= 2000; // un poco más flexible
+    return year >= 2000;
   }
   return false;
 }
@@ -147,6 +154,14 @@ function isNegative(text) {
   );
 }
 
+const ALLOWED_IMAGE_TYPES = [
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/gif",
+  "image/heic"
+];
+
 // === FLUJO PRINCIPAL ===
 app.post("/", async (req, res) => {
   const body = req.body;
@@ -155,7 +170,7 @@ app.post("/", async (req, res) => {
   const msgLower = msg.toLowerCase();
   const mediaCount = parseInt(body.NumMedia || "0", 10);
 
-  console.log("📩 Mensaje recibido:", from, msg);
+  console.log("📩 Mensaje recibido:", from, msg, "| Media:", mediaCount);
 
   // Inicializar estado de sesión
   if (!sessionState[from]) {
@@ -163,41 +178,101 @@ app.post("/", async (req, res) => {
   }
   const state = sessionState[from];
 
-  // === COMANDOS GLOBALES ===
-  if (["menu", "inicio"].includes(msgLower)) {
-    state.step = 1;
-    state.flow = null;
-    state.data = {};
-    return replyXml(
-      res,
-      "👋 Hola, soy el asistente virtual de *ACV Financiera*.\n\n" +
-        "¿En qué puedo ayudarte hoy?\n" +
-        "1️⃣ Solicitar un crédito con garantía\n" +
-        "2️⃣ Conocer requisitos\n" +
-        "3️⃣ Hablar con un asesor"
-    );
+  // === COMANDOS GLOBALES (solo texto) ===
+  if (mediaCount === 0) {
+    if (["menu", "inicio", "reiniciar"].includes(msgLower)) {
+      state.step = 1;
+      state.flow = null;
+      state.data = {};
+      return replyXml(
+        res,
+        "👋 Hola, soy el asistente virtual de *ACV Financiera*.\n\n" +
+          "¿En qué puedo ayudarte hoy?\n" +
+          "1️⃣ Solicitar un crédito con garantía\n" +
+          "2️⃣ Conocer requisitos\n" +
+          "3️⃣ Hablar con un asesor"
+      );
+    }
+
+    if (msgLower.includes("requisito") || msgLower.includes("informe")) {
+      state.flow = "requisitos";
+      state.step = 10;
+      return replyXml(
+        res,
+        "📋 *Requisitos generales para un crédito con garantía ACV:*\n\n" +
+          "💼 Documentos del cliente:\n" +
+          "- Identificación oficial vigente.\n" +
+          "- Comprobante de domicilio reciente.\n" +
+          "- Comprobante de ingresos o actividad.\n\n" +
+          "🚗 Garantía:\n" +
+          "- Auto, maquinaria o reloj en buenas condiciones.\n" +
+          "- Documentos que acrediten propiedad.\n\n" +
+          "💰 Condiciones:\n" +
+          "- Tasa desde 3.99% mensual.\n" +
+          "- Plazos flexibles.\n" +
+          "- Sin penalización por pagos anticipados.\n\n" +
+          "¿Te gustaría iniciar una solicitud ahora? (responde *Sí* o *No*)"
+      );
+    }
+
+    if (msgLower.includes("asesor") || msgLower.includes("humano")) {
+      state.flow = "asesor";
+      state.step = 20;
+      return replyXml(
+        res,
+        "Con gusto te ponemos en contacto con un asesor 👨‍💼.\n\n" +
+          "Por favor indícame tu nombre y la ciudad desde donde nos escribes."
+      );
+    }
   }
 
-  // === MANEJO DE FOTOS (para flujo de garantía) ===
+  // === MANEJO DE FOTOS (MEDIA) ===
   if (mediaCount > 0) {
-    const urls = [];
+    const validUrls = [];
+    let invalidCount = 0;
+
     for (let i = 0; i < mediaCount; i++) {
       const url = body[`MediaUrl${i}`];
-      if (url) urls.push(url);
+      const ctype = body[`MediaContentType${i}`];
+      console.log(`📎 Media ${i}:`, url, "| type:", ctype);
+
+      if (ctype && ALLOWED_IMAGE_TYPES.includes(ctype)) {
+        if (url) validUrls.push(url);
+      } else {
+        invalidCount++;
+      }
     }
-    state.data.fotos = (state.data.fotos || []).concat(urls);
+
+    if (invalidCount > 0 && validUrls.length === 0) {
+      return replyXml(
+        res,
+        "⚠️ El archivo que enviaste no es una foto válida.\n" +
+          "Por favor envía únicamente imágenes claras de tu garantía (JPG o PNG)."
+      );
+    }
+
+    if (!state.data.fotos) state.data.fotos = [];
+    state.data.fotos = state.data.fotos.concat(validUrls);
 
     const total = state.data.fotos.length;
+
     if (state.flow === "lead_calificado" && state.step === 8) {
       if (total < 4) {
         return replyXml(
           res,
-          `📸 Recibidas ${urls.length} foto(s). Llevo ${total} en total.\n` +
-            "Por favor envía las 4 fotos (una por mensaje) como se indicó."
+          `📸 Recibidas ${validUrls.length} foto(s) válidas en este envío.\n` +
+            `Llevo ${total} foto(s) en total.\n` +
+            "Por favor envía al menos 4 fotos de tu garantía como se indicó."
         );
       }
-      // Ya tiene 4 o más fotos → cerrar y guardar
+
+      // Ya tiene 4 o más fotos → cerrar y guardar fila completada
       state.data.etapa = "Completado";
+
+      const fotosFormulas = (state.data.fotos || []).map((url, idx) =>
+        `=HYPERLINK("${url}","Foto ${idx + 1}")`
+      );
+
       const row = [
         state.data.celular || from,
         state.data.nombre || "",
@@ -206,12 +281,15 @@ app.post("/", async (req, res) => {
         state.data.montoSolicitado || "",
         state.data.ubicacion || "",
         state.data.etapa || "Completado",
-        state.data.fechaContacto || new Date().toLocaleString("es-MX"),
+        state.data.fechaContacto || nowMX(),
         state.data.responsable || "Bot ACV",
-        (state.data.fotos || []).join("\n"),
+        fotosFormulas.join("\n"),
+        "", // Resultado final
+        ""  // Observaciones
       ];
       await appendLeadRow(row);
       delete sessionState[from];
+
       return replyXml(
         res,
         "✅ Perfecto, ya recibimos las fotos de tu garantía.\n" +
@@ -219,11 +297,11 @@ app.post("/", async (req, res) => {
       );
     }
 
-    // Si llega media fuera de contexto
+    // Si llega media fuera de contexto del flujo de fotos
     return replyXml(
       res,
-      `📸 Recibidas ${urls.length} foto(s).\n` +
-        "Si estás en un proceso de solicitud, por favor sigue las instrucciones anteriores."
+      `📸 Recibidas ${validUrls.length} foto(s).\n` +
+        "Si estás en un proceso de solicitud, por favor sigue las instrucciones anteriores o escribe *fotos* para retomar."
     );
   }
 
@@ -243,7 +321,6 @@ app.post("/", async (req, res) => {
   // === MENÚ PRINCIPAL (step 1) ===
   if (state.step === 1) {
     if (msgLower === "1" || msgLower.includes("crédito") || msgLower.includes("solicitud")) {
-      // Anti-duplicado: evitar múltiples solicitudes desde el mismo número
       const existing = await getExistingLeads();
       if (existing.includes(from)) {
         return replyXml(
@@ -311,7 +388,6 @@ app.post("/", async (req, res) => {
   if (state.flow === "requisitos") {
     if (state.step === 10) {
       if (isAffirmative(msg)) {
-        // redirigir al flujo 1 como nueva solicitud
         state.flow = "lead_calificado";
         state.step = 2;
         state.data = { celular: from };
@@ -344,11 +420,10 @@ app.post("/", async (req, res) => {
   // === FLUJO 3: HABLAR CON UN ASESOR (step 20+) ===
   if (state.flow === "asesor") {
     if (state.step === 20) {
-      // Guardar como lead para contacto humano
       state.data = state.data || {};
       state.data.celular = from;
       state.data.nombre = msg;
-      state.data.fechaContacto = new Date().toLocaleString("es-MX");
+      state.data.fechaContacto = nowMX();
       state.data.etapa = "Esperando contacto humano";
       state.data.responsable = "Asesor ACV";
 
@@ -360,9 +435,11 @@ app.post("/", async (req, res) => {
         "", // monto
         "", // ubicación
         state.data.etapa,
-        "", // cita
         state.data.fechaContacto,
         state.data.responsable,
+        "", // fotos
+        "", // resultado final
+        ""  // observaciones
       ];
       await appendLeadRow(row);
       delete sessionState[from];
@@ -377,6 +454,44 @@ app.post("/", async (req, res) => {
 
   // === FLUJO 1: LEAD CALIFICADO (step 2–8) ===
   if (state.flow === "lead_calificado") {
+    // Comandos de corrección dentro del flujo
+    if (msgLower === "monto") {
+      state.step = 4;
+      return replyXml(res, "Claro 👍 indícame nuevamente el monto que necesitas.");
+    }
+    if (msgLower === "garantia" || msgLower === "garantía") {
+      state.step = 2;
+      return replyXml(
+        res,
+        "Sin problema, volvamos a la garantía:\n" +
+          "1️⃣ Auto o camión\n" +
+          "2️⃣ Maquinaria pesada\n" +
+          "3️⃣ Reloj de alta gama\n" +
+          "4️⃣ Otro"
+      );
+    }
+    if (msgLower === "nombre") {
+      state.step = 6;
+      return replyXml(res, "Dime nuevamente tu nombre completo 🙂");
+    }
+    if (msgLower === "ciudad") {
+      state.step = 7;
+      return replyXml(res, "Indícame de nuevo la ciudad o estado donde te encuentras.");
+    }
+    if (msgLower === "fotos") {
+      state.step = 8;
+      state.data.fotos = [];
+      return replyXml(
+        res,
+        "Perfecto, vamos a reiniciar la parte de fotos.\n" +
+          "Por favor envía 4 fotos de tu garantía (una por mensaje):\n" +
+          "1️⃣ Exterior\n" +
+          "2️⃣ Interior\n" +
+          "3️⃣ Detalle identificativo (placa, serie o característica)\n" +
+          "4️⃣ Vista general"
+      );
+    }
+
     // Paso 2 – Tipo de garantía
     if (state.step === 2) {
       let tipo = "";
@@ -508,15 +623,14 @@ app.post("/", async (req, res) => {
       );
     }
 
-    // Paso 7 – Ubicación y guardado inicial del lead
+    // Paso 7 – Ubicación y guardado inicial del lead (Precalificado)
     if (state.step === 7) {
       state.data.ubicacion = msg;
-      state.data.fechaContacto = new Date().toLocaleString("es-MX");
+      state.data.fechaContacto = nowMX();
       state.data.etapa = "Precalificado – pendiente de fotos";
       state.data.responsable = "Bot ACV";
       state.data.celular = state.data.celular || from;
 
-      // Guardar lead precalificado sin fotos todavía
       const row = [
         state.data.celular,
         state.data.nombre,
@@ -528,6 +642,8 @@ app.post("/", async (req, res) => {
         state.data.fechaContacto,
         state.data.responsable,
         "", // fotos
+        "", // resultado final
+        ""  // observaciones
       ];
       await appendLeadRow(row);
 
@@ -540,11 +656,12 @@ app.post("/", async (req, res) => {
           "1️⃣ Exterior\n" +
           "2️⃣ Interior\n" +
           "3️⃣ Detalle identificativo (placa, serie o característica)\n" +
-          "4️⃣ Vista general"
+          "4️⃣ Vista general\n\n" +
+          "Si necesitas reiniciar esta parte, puedes escribir *fotos*."
       );
     }
 
-    // Paso 8 – Aquí se gestiona en el bloque de media (arriba)
+    // Paso 8 – se maneja en bloque de MEDIA
   }
 
   // === RESPUESTA POR DEFECTO ===
@@ -560,7 +677,7 @@ app.get("/", (req, res) => {
   res
     .status(200)
     .type("text/plain")
-    .send("✅ LeadBot ACV operativo – Flujo Lead Calificado.");
+    .send("✅ LeadBot ACV operativo – Flujo Lead Calificado (versión robusta).");
 });
 
 app.listen(PORT, () => {
