@@ -56,13 +56,13 @@ function replyXml(res, message, mediaUrl = null) {
 }
 
 // === SHEETS HELPERS ===
-async function getExistingLeads() {
+async function getLeadsRows() {
   try {
     const result = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
-      range: "Leads!A2:A", // A: Celular
+      range: "Leads!A2:L", // A: Celular ... L: Observaciones
     });
-    return result.data.values ? result.data.values.flat() : [];
+    return result.data.values || [];
   } catch (err) {
     console.error("❌ Error obteniendo leads:", err);
     return [];
@@ -81,6 +81,45 @@ async function appendLeadRow(data) {
   } catch (err) {
     console.error("❌ Error guardando Lead:", err);
   }
+}
+
+// ¿El último registro de este celular bloquea un nuevo lead?
+async function hasBlockingLead(celular) {
+  const rows = await getLeadsRows();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+    if (row[0] !== celular) continue; // A: Celular
+    const etapa = row[6] || ""; // G: Etapa del cliente
+    if (
+      etapa === "Precalificado – pendiente de fotos" ||
+      etapa === "Esperando contacto humano"
+    ) {
+      return true;
+    }
+    if (etapa === "Completado") {
+      // Último lead completado: podemos permitir uno nuevo
+      return false;
+    }
+    // Cualquier otra etapa no bloquea
+    return false;
+  }
+  return false;
+}
+
+// ¿Ya hay una solicitud vigente para hablar con asesor?
+async function hasPendingAdvisor(celular) {
+  const rows = await getLeadsRows();
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+    if (row[0] !== celular) continue;
+    const etapa = row[6] || "";
+    if (etapa === "Esperando contacto humano") {
+      return true;
+    }
+  }
+  return false;
 }
 
 // === AUXILIARES ===
@@ -152,6 +191,22 @@ function isNegative(text) {
   return t.includes("no") || t.includes("nel") || t.includes("negativo");
 }
 
+function isValidName(name) {
+  const parts = (name || "")
+    .trim()
+    .split(/\s+/)
+    .filter((p) => p.length > 0);
+  if (parts.length < 2) return false;
+  return parts.every((p) => p.length >= 2);
+}
+
+function isValidLocation(loc) {
+  const t = (loc || "").trim();
+  if (t.length < 3) return false;
+  const words = t.split(/\s+/);
+  return words.some((w) => w.length >= 4 && /[a-záéíóúñ]/i.test(w));
+}
+
 const ALLOWED_IMAGE_TYPES = [
   "image/jpeg",
   "image/jpg",
@@ -159,6 +214,36 @@ const ALLOWED_IMAGE_TYPES = [
   "image/gif",
   "image/heic",
 ];
+
+// Resumen de datos para "ver datos" / "resumen"
+function buildLeadSummary(state) {
+  const d = state.data || {};
+  const fotosCount = (d.fotos || []).length;
+  const garantia = d.tipoGarantia || "pendiente";
+  const anio = d.anioGarantia || "pendiente";
+  const monto = d.montoSolicitado || "pendiente";
+  const nombre = d.nombre || "pendiente";
+  const ubicacion = d.ubicacion || "pendiente";
+  const etapa = d.etapa || "En curso";
+
+  return (
+    "📄 Resumen de tu solicitud:\n\n" +
+    `• Garantía: ${garantia}\n` +
+    `• Año: ${anio}\n` +
+    `• Monto solicitado: ${monto}\n` +
+    `• Nombre: ${nombre}\n` +
+    `• Ubicación: ${ubicacion}\n` +
+    `• Etapa: ${etapa}\n` +
+    `• Fotos: ${fotosCount}/4\n\n` +
+    "Si deseas corregir algo, puedes escribir:\n" +
+    "- monto\n" +
+    "- garantia\n" +
+    "- nombre\n" +
+    "- ciudad\n" +
+    "- fotos\n" +
+    "O escribe *menu* para volver al inicio."
+  );
+}
 
 // === FLUJO PRINCIPAL ===
 app.post("/", async (req, res) => {
@@ -178,6 +263,134 @@ app.post("/", async (req, res) => {
 
   // === COMANDOS GLOBALES (solo texto) ===
   if (mediaCount === 0) {
+    // Cancelar flujo
+    if (["cancelar", "ya no", "terminar"].includes(msgLower)) {
+      delete sessionState[from];
+      return replyXml(
+        res,
+        "He cancelado tu solicitud actual ✅\n" +
+          "Si más adelante deseas iniciar de nuevo, solo escribe *menu*."
+      );
+    }
+
+    // Ayuda
+    if (msgLower === "ayuda" || msgLower === "help" || msgLower === "?") {
+      if (state.flow === "lead_calificado") {
+        return replyXml(
+          res,
+          "ℹ️ Estás en el proceso de solicitud de crédito con garantía.\n\n" +
+            "Comandos útiles:\n" +
+            "- *resumen* o *ver datos*: ver lo que llevas capturado\n" +
+            "- *monto*, *garantia*, *nombre*, *ciudad*, *fotos*: corregir un dato\n" +
+            "- *volver*: regresar un paso\n" +
+            "- *cancelar*: cancelar la solicitud\n" +
+            "- *menu*: volver al inicio"
+        );
+      }
+      return replyXml(
+        res,
+        "ℹ️ Puedo ayudarte a:\n" +
+          "- Solicitar un crédito con garantía\n" +
+          "- Conocer requisitos\n" +
+          "- Hablar con un asesor\n\n" +
+          "Escribe *menu* para ver las opciones."
+      );
+    }
+
+    // Resumen / ver datos
+    if (
+      msgLower === "resumen" ||
+      msgLower === "ver datos" ||
+      msgLower.includes("ver datos")
+    ) {
+      if (state.flow === "lead_calificado") {
+        return replyXml(res, buildLeadSummary(state));
+      }
+      return replyXml(
+        res,
+        "Por el momento no hay una solicitud en curso.\n" +
+          "Escribe *menu* para iniciar una nueva solicitud."
+      );
+    }
+
+    // Ubicación / oficinas
+    if (
+      msgLower.includes("ubicacion") ||
+      msgLower.includes("ubicación") ||
+      msgLower.includes("oficinas") ||
+      msgLower.includes("donde estan") ||
+      msgLower.includes("dónde están")
+    ) {
+      return replyXml(
+        res,
+        "📍 *Ubicaciones ACV (ejemplo):*\n\n" +
+          "1) Corporativo ACV\n" +
+          "   Av. Ejemplo 123, Col. Centro, CDMX\n\n" +
+          "2) Patio de resguardo 1\n" +
+          "   Calle Industrial 456, Zona Industrial, Edo. Méx.\n\n" +
+          "3) Patio de resguardo 2\n" +
+          "   Carretera Federal km 7.5, Bodega 3, Edo. Méx.\n\n" +
+          "Para más detalles, un asesor puede apoyarte. Escribe *asesor* si deseas que te contacten."
+      );
+    }
+
+    // Volver / regresar un paso (solo en lead_calificado)
+    if (
+      ["volver", "regresar", "atrás", "atras"].includes(msgLower) &&
+      state.flow === "lead_calificado"
+    ) {
+      if (state.step <= 2) {
+        return replyXml(
+          res,
+          "Ya estás al inicio de la solicitud de crédito.\n" +
+            "Si deseas cancelar por completo, escribe *cancelar*."
+        );
+      }
+      state.step = Math.max(2, state.step - 1);
+      if (state.step === 2) {
+        return replyXml(
+          res,
+          "Regresemos a la garantía:\n" +
+            "1️⃣ Auto o camión\n" +
+            "2️⃣ Maquinaria pesada\n" +
+            "3️⃣ Reloj de alta gama\n" +
+            "4️⃣ Otro"
+        );
+      }
+      if (state.step === 3) {
+        return replyXml(
+          res,
+          "De nuevo, ¿de qué año es tu unidad o equipo? (Ejemplo: 2018, 2020...)"
+        );
+      }
+      if (state.step === 4) {
+        return replyXml(
+          res,
+          "Reindícame, por favor: ¿Cuánto dinero necesitas aproximadamente? 💰"
+        );
+      }
+      if (state.step === 5) {
+        return replyXml(
+          res,
+          "Volvamos a esta parte:\n" +
+            "¿Estás dispuesto a dejar tu garantía en resguardo durante el crédito? (responde *Sí* o *No*)"
+        );
+      }
+      if (state.step === 6) {
+        return replyXml(
+          res,
+          "Reindícame tu nombre completo, por favor 🙂"
+        );
+      }
+      if (state.step === 7) {
+        return replyXml(
+          res,
+          "Reindícame en qué ciudad o estado te encuentras."
+        );
+      }
+    }
+
+    // Menú principal
     if (["menu", "inicio", "reiniciar"].includes(msgLower)) {
       state.step = 1;
       state.flow = null;
@@ -192,6 +405,7 @@ app.post("/", async (req, res) => {
       );
     }
 
+    // Requisitos directo
     if (msgLower.includes("requisito") || msgLower.includes("informe")) {
       state.flow = "requisitos";
       state.step = 10;
@@ -213,6 +427,7 @@ app.post("/", async (req, res) => {
       );
     }
 
+    // Asesor directo
     if (msgLower.includes("asesor") || msgLower.includes("humano")) {
       state.flow = "asesor";
       state.step = 20;
@@ -322,12 +537,11 @@ app.post("/", async (req, res) => {
       msgLower.includes("crédito") ||
       msgLower.includes("solicitud")
     ) {
-      const existing = await getExistingLeads();
-      if (existing.includes(from)) {
+      if (await hasBlockingLead(from)) {
         return replyXml(
           res,
-          "⚠️ Detectamos que ya tienes una solicitud registrada con este número.\n" +
-            "Un asesor se pondrá en contacto contigo. Si necesitas algo más, responde *menu*."
+          "⚠️ Detectamos que ya tienes una solicitud activa con este número.\n" +
+            "Un asesor se pondrá en contacto contigo. Si necesitas algo más, responde *asesor* o *menu*."
         );
       }
       state.flow = "lead_calificado";
@@ -397,6 +611,14 @@ app.post("/", async (req, res) => {
   if (state.flow === "requisitos") {
     if (state.step === 10) {
       if (isAffirmative(msg)) {
+        if (await hasBlockingLead(from)) {
+          delete sessionState[from];
+          return replyXml(
+            res,
+            "⚠️ Detectamos que ya tienes una solicitud activa con este número.\n" +
+              "Un asesor se pondrá en contacto contigo. Si necesitas algo más, responde *asesor* o *menu*."
+          );
+        }
         state.flow = "lead_calificado";
         state.step = 2;
         state.data = { celular: from };
@@ -429,6 +651,15 @@ app.post("/", async (req, res) => {
   // === FLUJO 3: HABLAR CON UN ASESOR (step 20+) ===
   if (state.flow === "asesor") {
     if (state.step === 20) {
+      if (await hasPendingAdvisor(from)) {
+        delete sessionState[from];
+        return replyXml(
+          res,
+          "Ya tenemos una solicitud reciente para que un asesor te contacte ✅\n" +
+            "En breve alguien de nuestro equipo se pondrá en contacto contigo."
+        );
+      }
+
       state.data = state.data || {};
       state.data.celular = from;
       state.data.nombre = msg;
@@ -630,6 +861,12 @@ app.post("/", async (req, res) => {
 
     // Paso 6 – Nombre
     if (state.step === 6) {
+      if (!isValidName(msg)) {
+        return replyXml(
+          res,
+          "Para continuar necesito tu nombre completo (nombre y apellido)."
+        );
+      }
       state.data.nombre = msg;
       state.step = 7;
       return replyXml(res, "¿En qué ciudad o estado te encuentras?");
@@ -637,6 +874,13 @@ app.post("/", async (req, res) => {
 
     // Paso 7 – Ubicación y guardado inicial del lead (Precalificado)
     if (state.step === 7) {
+      if (!isValidLocation(msg)) {
+        return replyXml(
+          res,
+          "Para continuar, indícame la ciudad o estado donde te encuentras (por ejemplo: \"Estado de México\" o \"Ciudad de México\")."
+        );
+      }
+
       state.data.ubicacion = msg;
       state.data.fechaContacto = nowMX();
       state.data.etapa = "Precalificado – pendiente de fotos";
@@ -669,7 +913,7 @@ app.post("/", async (req, res) => {
           "2️⃣ Interior\n" +
           "3️⃣ Detalle identificativo (placa, serie o característica)\n" +
           "4️⃣ Vista general\n\n" +
-          "Si necesitas reiniciar esta parte, puedes escribir *fotos*."
+          "Si necesitas reiniciar esta parte, puedes escribir *fotos* o ver tu *resumen* con ese comando."
       );
     }
 
@@ -680,7 +924,7 @@ app.post("/", async (req, res) => {
   return replyXml(
     res,
     "No reconocí tu mensaje en el contexto actual.\n" +
-      "Puedes escribir *menu* para volver al inicio."
+      "Puedes escribir *menu* para volver al inicio o *ayuda* para ver opciones."
   );
 });
 
@@ -689,7 +933,7 @@ app.get("/", (req, res) => {
   res
     .status(200)
     .type("text/plain")
-    .send("✅ LeadBot ACV operativo – Flujo Lead Calificado (versión robusta).");
+    .send("✅ LeadBot ACV operativo – Flujo Lead Calificado (versión robusta v2).");
 });
 
 app.listen(PORT, () => {
