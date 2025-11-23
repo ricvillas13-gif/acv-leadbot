@@ -11,6 +11,9 @@ app.use(bodyParser.json());
 const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
 
+// 👇 REEMPLAZA ESTA URL POR TU LOGO EN GITHUB (RAW)
+const LOGO_URL = "https://leadbot-acv.onrender.com/logo-acv-transparente.png";
+
 // === GOOGLE AUTH ===
 let creds;
 try {
@@ -37,7 +40,7 @@ function nowMX() {
   });
 }
 
-// === UTILIDAD XML SEGURA ===
+// === UTILIDAD XML – 1 mensaje ===
 function replyXml(res, message, mediaUrl = null) {
   const xmlObj = {
     Response: {
@@ -49,6 +52,27 @@ function replyXml(res, message, mediaUrl = null) {
   };
   const xml = create(xmlObj).end({ prettyPrint: false });
   console.log("📤 XML a Twilio:", xml);
+  res
+    .status(200)
+    .set("Content-Type", "application/xml; charset=utf-8")
+    .send(xml);
+}
+
+// === UTILIDAD XML – varios mensajes en la misma respuesta ===
+function replyXmlMulti(res, messages) {
+  const msgs = messages.map((m) => ({
+    Body: m.body || "",
+    ...(m.mediaUrl ? { Media: m.mediaUrl } : {}),
+  }));
+
+  const xmlObj = {
+    Response: {
+      Message: msgs.length === 1 ? msgs[0] : msgs,
+    },
+  };
+
+  const xml = create(xmlObj).end({ prettyPrint: false });
+  console.log("📤 XML múltiple a Twilio:", xml);
   res
     .status(200)
     .set("Content-Type", "application/xml; charset=utf-8")
@@ -234,14 +258,7 @@ function buildLeadSummary(state) {
     `• Nombre: ${nombre}\n` +
     `• Ubicación: ${ubicacion}\n` +
     `• Etapa: ${etapa}\n` +
-    `• Fotos: ${fotosCount}/4\n\n` +
-    "Si deseas corregir algo, puedes escribir:\n" +
-    "- monto\n" +
-    "- garantia\n" +
-    "- nombre\n" +
-    "- ciudad\n" +
-    "- fotos\n" +
-    "O escribe *menu* para volver al inicio."
+    `• Fotos: ${fotosCount}/4\n`
   );
 }
 
@@ -390,7 +407,7 @@ app.post("/", async (req, res) => {
       }
     }
 
-    // Menú principal
+    // Menú principal (también queremos logo aquí)
     if (["menu", "inicio", "reiniciar"].includes(msgLower)) {
       state.step = 1;
       state.flow = null;
@@ -401,7 +418,8 @@ app.post("/", async (req, res) => {
           "¿En qué puedo ayudarte hoy?\n" +
           "1️⃣ Solicitar un crédito con garantía\n" +
           "2️⃣ Conocer requisitos\n" +
-          "3️⃣ Hablar con un asesor"
+          "3️⃣ Hablar con un asesor",
+        LOGO_URL || null
       );
     }
 
@@ -500,13 +518,26 @@ app.post("/", async (req, res) => {
         "", // Observaciones
       ];
       await appendLeadRow(row);
+
+      // Construimos el resumen antes de borrar la sesión
+      const resumenLargo = buildLeadSummary(state);
       delete sessionState[from];
 
-      return replyXml(
-        res,
-        "✅ Perfecto, ya recibimos las fotos de tu garantía.\n" +
-          "Tu solicitud ha sido registrada con éxito. Un asesor revisará tu información y te contactará muy pronto."
-      );
+      // Enviamos 2 mensajes:
+      // 1) Mensaje corto de confirmación
+      // 2) Resumen detallado
+      return replyXmlMulti(res, [
+        {
+          body:
+            "✅ Perfecto, ya recibimos las fotos de tu garantía.\n" +
+            "Tu solicitud ha sido registrada con éxito. Un asesor revisará tu información y te contactará muy pronto.",
+        },
+        {
+          body:
+            resumenLargo +
+            "\n🎯 En resumen: tu solicitud quedó registrada y será atendida por un asesor de ACV en breve.",
+        },
+      ]);
     }
 
     // Si llega media fuera de contexto del flujo de fotos
@@ -517,7 +548,7 @@ app.post("/", async (req, res) => {
     );
   }
 
-  // === ESTADO 0 → Mostrar menú inicial ===
+  // === ESTADO 0 → Mostrar menú inicial (con logo) ===
   if (state.step === 0) {
     state.step = 1;
     return replyXml(
@@ -526,7 +557,8 @@ app.post("/", async (req, res) => {
         "¿En qué puedo ayudarte hoy?\n" +
         "1️⃣ Solicitar un crédito con garantía\n" +
         "2️⃣ Conocer requisitos\n" +
-        "3️⃣ Hablar con un asesor"
+        "3️⃣ Hablar con un asesor",
+      LOGO_URL || null
     );
   }
 
@@ -933,7 +965,7 @@ app.get("/", (req, res) => {
   res
     .status(200)
     .type("text/plain")
-    .send("✅ LeadBot ACV operativo – Flujo Lead Calificado (versión robusta v2).");
+    .send("✅ LeadBot ACV operativo – Flujo Lead Calificado (versión robusta v3).");
 });
 
 app.listen(PORT, () => {
