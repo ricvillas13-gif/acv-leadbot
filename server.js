@@ -414,7 +414,7 @@ app.post("/", async (req, res) => {
       state.data = {};
       return replyXml(
         res,
-        "👋 Hola, soy el asistente virtual de *ACV Financiera*.\n\n" +
+        "👋 Hola, soy el asistente virtual de *ACV*.\n\n" +
           "¿En qué puedo ayudarte hoy?\n" +
           "1️⃣ Solicitar un crédito con garantía\n" +
           "2️⃣ Conocer requisitos\n" +
@@ -553,7 +553,7 @@ app.post("/", async (req, res) => {
     state.step = 1;
     return replyXml(
       res,
-      "👋 Hola, soy el asistente virtual de *ACV Financiera*.\n\n" +
+      "👋 Hola, soy el asistente virtual de *ACV*.\n\n" +
         "¿En qué puedo ayudarte hoy?\n" +
         "1️⃣ Solicitar un crédito con garantía\n" +
         "2️⃣ Conocer requisitos\n" +
