@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
 
 // 👇 REEMPLAZA ESTA URL POR TU LOGO EN GITHUB (RAW)
-const LOGO_URL = "https://leadbot-acv.onrender.com/logo-acv-transparente.png";
+const LOGO_URL = "https://github.com/ricvillas13-gif/acv-leadbot/blob/main/public/Logo-ACV-Transparente%20(2).png";
 
 // === GOOGLE AUTH ===
 let creds;
