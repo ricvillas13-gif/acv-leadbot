@@ -5,6 +5,12 @@ import { create } from "xmlbuilder2";
 import * as chrono from "chrono-node";
 
 const app = express();
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
+const TWILIO_AUTH_TOKEN  = process.env.TWILIO_AUTH_TOKEN || "";
+
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+  console.warn("⚠️ TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN no están definidos. /media no funcionará.");
+}
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
@@ -967,6 +973,12 @@ app.get("/", (req, res) => {
     .type("text/plain")
     .send("✅ LeadBot ACV operativo – Flujo Lead Calificado (versión robusta v3).");
 });
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
+const TWILIO_AUTH_TOKEN  = process.env.TWILIO_AUTH_TOKEN || "";
+
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+  console.warn("⚠️ TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN no están definidos. /media no funcionará.");
+}
 
 app.listen(PORT, () => {
   console.log(`🚀 LeadBot ACV ejecutándose en el puerto ${PORT}`);
