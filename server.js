@@ -1,31 +1,31 @@
 import express from "express";
 import bodyParser from "body-parser";
 import { google } from "googleapis";
-import { create } from "xmlbuilder2";
-import * as chrono from "chrono-node";
+import he from "he"; // escapador HTML seguro
 
 const app = express();
-const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
-const TWILIO_AUTH_TOKEN  = process.env.TWILIO_AUTH_TOKEN || "";
-
-if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
-  console.warn("⚠️ TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN no están definidos. /media no funcionará.");
-}
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
 
-// 👇 REEMPLAZA ESTA URL POR TU LOGO EN GITHUB (RAW)
-const LOGO_URL = "https://raw.githubusercontent.com/ricvillas13-gif/acv-leadbot/main/public/logo-acv.png";
+// === TWILIO AUTH PARA PROXY DE FOTOS ===
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
+
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+  console.warn(
+    "⚠️ TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN no están definidos. /media no funcionará."
+  );
+}
 
 // === GOOGLE AUTH ===
 let creds;
 try {
-  console.log("🔍 Verificando GOOGLE_SERVICE_ACCOUNT...");
+  console.log("🔍 Verificando variable GOOGLE_SERVICE_ACCOUNT...");
   creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT);
-  console.log("✅ Credenciales parseadas correctamente.");
+  console.log("✅ JSON parseado correctamente. Cliente de servicio listo.");
 } catch (err) {
   console.error("❌ ERROR al parsear GOOGLE_SERVICE_ACCOUNT:", err);
 }
@@ -36,67 +36,29 @@ const auth = new google.auth.GoogleAuth({
 });
 const sheets = google.sheets({ version: "v4", auth });
 
-// === SESIONES EN MEMORIA ===
+// === SESIONES ===
 const sessionState = {};
 
-// === UTILIDADES DE FECHA (HUSO MX) ===
-function nowMX() {
-  return new Date().toLocaleString("es-MX", {
-    timeZone: "America/Mexico_City",
+// === UTILS ===
+function xmlEscape(str) {
+  // Usamos referencias numéricas en lugar de entidades con nombre
+  // para evitar problemas tipo &oacute; con Twilio.
+  return he.encode(str || "", {
+    useNamedReferences: false,
+    allowUnsafeSymbols: true,
   });
 }
 
-// === UTILIDAD XML – 1 mensaje ===
 function replyXml(res, message, mediaUrl = null) {
-  const xmlObj = {
-    Response: {
-      Message: {
-        Body: message || "",
-        ...(mediaUrl ? { Media: mediaUrl } : {}),
-      },
-    },
-  };
-  const xml = create(xmlObj).end({ prettyPrint: false });
-  console.log("📤 XML a Twilio:", xml);
-  res
-    .status(200)
-    .set("Content-Type", "application/xml; charset=utf-8")
-    .send(xml);
-}
-
-// === UTILIDAD XML – varios mensajes en la misma respuesta ===
-function replyXmlMulti(res, messages) {
-  const msgs = messages.map((m) => ({
-    Body: m.body || "",
-    ...(m.mediaUrl ? { Media: m.mediaUrl } : {}),
-  }));
-
-  const xmlObj = {
-    Response: {
-      Message: msgs.length === 1 ? msgs[0] : msgs,
-    },
-  };
-
-  const xml = create(xmlObj).end({ prettyPrint: false });
-  console.log("📤 XML múltiple a Twilio:", xml);
-  res
-    .status(200)
-    .set("Content-Type", "application/xml; charset=utf-8")
-    .send(xml);
-}
-
-// === SHEETS HELPERS ===
-async function getLeadsRows() {
-  try {
-    const result = await sheets.spreadsheets.values.get({
-      spreadsheetId: SHEET_ID,
-      range: "Leads!A2:L", // A: Celular ... L: Observaciones
-    });
-    return result.data.values || [];
-  } catch (err) {
-    console.error("❌ Error obteniendo leads:", err);
-    return [];
+  let xml = '<?xml version="1.0" encoding="UTF-8"?><Response><Message>';
+  xml += `<Body>${xmlEscape(message)}</Body>`;
+  if (mediaUrl) {
+    xml += `<Media>${xmlEscape(mediaUrl)}</Media>`;
   }
+  xml += "</Message></Response>";
+
+  res.writeHead(200, { "Content-Type": "application/xml; charset=utf-8" });
+  res.end(xml);
 }
 
 async function appendLeadRow(data) {
@@ -113,865 +75,282 @@ async function appendLeadRow(data) {
   }
 }
 
-// ¿El último registro de este celular bloquea un nuevo lead?
-async function hasBlockingLead(celular) {
-  const rows = await getLeadsRows();
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const row = rows[i];
-    if (!row || row.length === 0) continue;
-    if (row[0] !== celular) continue; // A: Celular
-    const etapa = row[6] || ""; // G: Etapa del cliente
-    if (
-      etapa === "Precalificado – pendiente de fotos" ||
-      etapa === "Esperando contacto humano"
-    ) {
-      return true;
-    }
-    if (etapa === "Completado") {
-      // Último lead completado: podemos permitir uno nuevo
-      return false;
-    }
-    // Cualquier otra etapa no bloquea
-    return false;
-  }
-  return false;
-}
-
-// ¿Ya hay una solicitud vigente para hablar con asesor?
-async function hasPendingAdvisor(celular) {
-  const rows = await getLeadsRows();
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const row = rows[i];
-    if (!row || row.length === 0) continue;
-    if (row[0] !== celular) continue;
-    const etapa = row[6] || "";
-    if (etapa === "Esperando contacto humano") {
-      return true;
-    }
-  }
-  return false;
-}
-
-// === AUXILIARES ===
-function formatCurrency(value) {
-  const num = parseFloat((value || "").toString().replace(/[^0-9.]/g, ""));
-  if (isNaN(num)) return value;
-  return num.toLocaleString("es-MX", {
-    style: "currency",
-    currency: "MXN",
-  });
-}
-
-function parseYear(text) {
-  const match = (text || "").match(/\b(19[5-9]\d|20[0-4]\d)\b/);
-  return match ? parseInt(match[0], 10) : null;
-}
-
-function parseDateTime(text) {
-  const result = chrono.parseDate(text, new Date(), { forwardDate: true });
-  return result
-    ? result.toLocaleString("es-MX", { timeZone: "America/Mexico_City" })
-    : null;
-}
-
-// Filtros de calificación – reglas simples
-function isYearValid(tipo, year) {
-  if (!year) return false;
-  if (tipo === "Auto" || tipo === "Maquinaria") {
-    return year >= 2010;
-  }
-  if (tipo === "Reloj") {
-    return year >= 2000;
-  }
-  return false;
-}
-
-function parseAmount(text) {
-  const num = parseFloat((text || "").replace(/[^0-9.]/g, ""));
-  return isNaN(num) ? null : num;
-}
-
-function isAmountValid(tipo, amount) {
-  if (!amount) return false;
-  if (tipo === "Auto") {
-    return amount >= 20000 && amount <= 2000000;
-  }
-  if (tipo === "Maquinaria") {
-    return amount >= 100000 && amount <= 5000000;
-  }
-  if (tipo === "Reloj") {
-    return amount >= 50000 && amount <= 500000;
-  }
-  return false;
-}
-
-function isAffirmative(text) {
-  const t = (text || "").toLowerCase();
-  return (
-    t.includes("si") ||
-    t.includes("sí") ||
-    t.includes("claro") ||
-    t.includes("ok") ||
-    t.includes("de acuerdo")
-  );
-}
-
-function isNegative(text) {
-  const t = (text || "").toLowerCase();
-  return t.includes("no") || t.includes("nel") || t.includes("negativo");
-}
-
-function isValidName(name) {
-  const parts = (name || "")
-    .trim()
-    .split(/\s+/)
-    .filter((p) => p.length > 0);
-  if (parts.length < 2) return false;
-  return parts.every((p) => p.length >= 2);
-}
-
-function isValidLocation(loc) {
-  const t = (loc || "").trim();
-  if (t.length < 3) return false;
-  const words = t.split(/\s+/);
-  return words.some((w) => w.length >= 4 && /[a-záéíóúñ]/i.test(w));
-}
-
-const ALLOWED_IMAGE_TYPES = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/gif",
-  "image/heic",
-];
-
-// Resumen de datos para "ver datos" / "resumen"
-function buildLeadSummary(state) {
-  const d = state.data || {};
-  const fotosCount = (d.fotos || []).length;
-  const garantia = d.tipoGarantia || "pendiente";
-  const anio = d.anioGarantia || "pendiente";
-  const monto = d.montoSolicitado || "pendiente";
-  const nombre = d.nombre || "pendiente";
-  const ubicacion = d.ubicacion || "pendiente";
-  const etapa = d.etapa || "En curso";
-
-  return (
-    "📄 Resumen de tu solicitud:\n\n" +
-    `• Garantía: ${garantia}\n` +
-    `• Año: ${anio}\n` +
-    `• Monto solicitado: ${monto}\n` +
-    `• Nombre: ${nombre}\n` +
-    `• Ubicación: ${ubicacion}\n` +
-    `• Etapa: ${etapa}\n` +
-    `• Fotos: ${fotosCount}/4\n`
-  );
-}
-
 // === FLUJO PRINCIPAL ===
 app.post("/", async (req, res) => {
   const body = req.body;
-  const from = body.From || ""; // número de WhatsApp/SMS
-  const msg = (body.Body || "").trim();
-  const msgLower = msg.toLowerCase();
+  const from = body.From || "";
+  const msg = (body.Body || "").trim().toLowerCase();
   const mediaCount = parseInt(body.NumMedia || "0", 10);
 
-  console.log("📩 Mensaje recibido:", from, msg, "| Media:", mediaCount);
+  console.log("📩 Mensaje recibido:", from, msg);
 
-  // Inicializar estado de sesión
-  if (!sessionState[from]) {
-    sessionState[from] = { step: 0, data: {}, flow: null };
-  }
+  if (!sessionState[from]) sessionState[from] = { step: 0, data: {} };
   const state = sessionState[from];
 
-  // === COMANDOS GLOBALES (solo texto) ===
-  if (mediaCount === 0) {
-    // Cancelar flujo
-    if (["cancelar", "ya no", "terminar"].includes(msgLower)) {
-      delete sessionState[from];
-      return replyXml(
-        res,
-        "He cancelado tu solicitud actual ✅\n" +
-          "Si más adelante deseas iniciar de nuevo, solo escribe *menu*."
-      );
-    }
-
-    // Ayuda
-    if (msgLower === "ayuda" || msgLower === "help" || msgLower === "?") {
-      if (state.flow === "lead_calificado") {
-        return replyXml(
-          res,
-          "ℹ️ Estás en el proceso de solicitud de crédito con garantía.\n\n" +
-            "Comandos útiles:\n" +
-            "- *resumen* o *ver datos*: ver lo que llevas capturado\n" +
-            "- *monto*, *garantia*, *nombre*, *ciudad*, *fotos*: corregir un dato\n" +
-            "- *volver*: regresar un paso\n" +
-            "- *cancelar*: cancelar la solicitud\n" +
-            "- *menu*: volver al inicio"
-        );
-      }
-      return replyXml(
-        res,
-        "ℹ️ Puedo ayudarte a:\n" +
-          "- Solicitar un crédito con garantía\n" +
-          "- Conocer requisitos\n" +
-          "- Hablar con un asesor\n\n" +
-          "Escribe *menu* para ver las opciones."
-      );
-    }
-
-    // Resumen / ver datos
-    if (
-      msgLower === "resumen" ||
-      msgLower === "ver datos" ||
-      msgLower.includes("ver datos")
-    ) {
-      if (state.flow === "lead_calificado") {
-        return replyXml(res, buildLeadSummary(state));
-      }
-      return replyXml(
-        res,
-        "Por el momento no hay una solicitud en curso.\n" +
-          "Escribe *menu* para iniciar una nueva solicitud."
-      );
-    }
-
-    // Ubicación / oficinas
-    if (
-      msgLower.includes("ubicacion") ||
-      msgLower.includes("ubicación") ||
-      msgLower.includes("oficinas") ||
-      msgLower.includes("donde estan") ||
-      msgLower.includes("dónde están")
-    ) {
-      return replyXml(
-        res,
-        "📍 *Ubicaciones ACV (ejemplo):*\n\n" +
-          "1) Corporativo ACV\n" +
-          "   Av. Ejemplo 123, Col. Centro, CDMX\n\n" +
-          "2) Patio de resguardo 1\n" +
-          "   Calle Industrial 456, Zona Industrial, Edo. Méx.\n\n" +
-          "3) Patio de resguardo 2\n" +
-          "   Carretera Federal km 7.5, Bodega 3, Edo. Méx.\n\n" +
-          "Para más detalles, un asesor puede apoyarte. Escribe *asesor* si deseas que te contacten."
-      );
-    }
-
-    // Volver / regresar un paso (solo en lead_calificado)
-    if (
-      ["volver", "regresar", "atrás", "atras"].includes(msgLower) &&
-      state.flow === "lead_calificado"
-    ) {
-      if (state.step <= 2) {
-        return replyXml(
-          res,
-          "Ya estás al inicio de la solicitud de crédito.\n" +
-            "Si deseas cancelar por completo, escribe *cancelar*."
-        );
-      }
-      state.step = Math.max(2, state.step - 1);
-      if (state.step === 2) {
-        return replyXml(
-          res,
-          "Regresemos a la garantía:\n" +
-            "1️⃣ Auto o camión\n" +
-            "2️⃣ Maquinaria pesada\n" +
-            "3️⃣ Reloj de alta gama\n" +
-            "4️⃣ Otro"
-        );
-      }
-      if (state.step === 3) {
-        return replyXml(
-          res,
-          "De nuevo, ¿de qué año es tu unidad o equipo? (Ejemplo: 2018, 2020...)"
-        );
-      }
-      if (state.step === 4) {
-        return replyXml(
-          res,
-          "Reindícame, por favor: ¿Cuánto dinero necesitas aproximadamente? 💰"
-        );
-      }
-      if (state.step === 5) {
-        return replyXml(
-          res,
-          "Volvamos a esta parte:\n" +
-            "¿Estás dispuesto a dejar tu garantía en resguardo durante el crédito? (responde *Sí* o *No*)"
-        );
-      }
-      if (state.step === 6) {
-        return replyXml(
-          res,
-          "Reindícame tu nombre completo, por favor 🙂"
-        );
-      }
-      if (state.step === 7) {
-        return replyXml(
-          res,
-          "Reindícame en qué ciudad o estado te encuentras."
-        );
-      }
-    }
-
-    // Menú principal (también queremos logo aquí)
-    if (["menu", "inicio", "reiniciar"].includes(msgLower)) {
-      state.step = 1;
-      state.flow = null;
-      state.data = {};
-      return replyXml(
-        res,
-        "👋 Hola, soy el asistente virtual de *ACV*.\n\n" +
-          "¿En qué puedo ayudarte hoy?\n" +
-          "1️⃣ Solicitar un crédito con garantía\n" +
-          "2️⃣ Conocer requisitos\n" +
-          "3️⃣ Hablar con un asesor",
-        LOGO_URL || null
-      );
-    }
-
-    // Requisitos directo
-    if (msgLower.includes("requisito") || msgLower.includes("informe")) {
-      state.flow = "requisitos";
-      state.step = 10;
-      return replyXml(
-        res,
-        "📋 *Requisitos generales para un crédito con garantía ACV:*\n\n" +
-          "💼 Documentos del cliente:\n" +
-          "- Identificación oficial vigente.\n" +
-          "- Comprobante de domicilio reciente.\n" +
-          "- Comprobante de ingresos o actividad.\n\n" +
-          "🚗 Garantía:\n" +
-          "- Auto, maquinaria o reloj en buenas condiciones.\n" +
-          "- Documentos que acrediten propiedad.\n\n" +
-          "💰 Condiciones:\n" +
-          "- Tasa desde 3.99% mensual.\n" +
-          "- Plazos flexibles.\n" +
-          "- Sin penalización por pagos anticipados.\n\n" +
-          "¿Te gustaría iniciar una solicitud ahora? (responde *Sí* o *No*)"
-      );
-    }
-
-    // Asesor directo
-    if (msgLower.includes("asesor") || msgLower.includes("humano")) {
-      state.flow = "asesor";
-      state.step = 20;
-      return replyXml(
-        res,
-        "Con gusto te ponemos en contacto con un asesor 👨‍💼.\n\n" +
-          "Por favor indícame tu nombre y la ciudad desde donde nos escribes."
-      );
-    }
-  }
-
-  // === MANEJO DE FOTOS (MEDIA) ===
+  // === MANEJO DE MEDIOS (FOTOS) ===
   if (mediaCount > 0) {
-    const validUrls = [];
-    let invalidCount = 0;
-
+    const urls = [];
     for (let i = 0; i < mediaCount; i++) {
       const url = body[`MediaUrl${i}`];
-      const ctype = body[`MediaContentType${i}`];
-      console.log(`📎 Media ${i}:`, url, "| type:", ctype);
-
-      if (ctype && ALLOWED_IMAGE_TYPES.includes(ctype)) {
-        if (url) validUrls.push(url);
-      } else {
-        invalidCount++;
-      }
+      const tipo = state.data["Garantía"] || "Foto";
+      urls.push(`${tipo} - ${url}`);
     }
-
-    if (invalidCount > 0 && validUrls.length === 0) {
-      return replyXml(
-        res,
-        "⚠️ El archivo que enviaste no es una foto válida.\n" +
-          "Por favor envía únicamente imágenes claras de tu garantía (JPG o PNG)."
-      );
-    }
-
-    if (!state.data.fotos) state.data.fotos = [];
-    state.data.fotos = state.data.fotos.concat(validUrls);
-
-    const total = state.data.fotos.length;
-
-    if (state.flow === "lead_calificado" && state.step === 8) {
-      if (total < 4) {
-        return replyXml(
-          res,
-          `📸 Recibidas ${validUrls.length} foto(s) válidas en este envío.\n` +
-            `Llevo ${total} foto(s) en total.\n` +
-            "Por favor envía al menos 4 fotos de tu garantía como se indicó."
-        );
-      }
-
-      // Ya tiene 4 o más fotos → cerrar y guardar fila completada
-      state.data.etapa = "Completado";
-
-      // Guardar las URLs tal cual, una por línea (sin fórmulas)
-      const fotosTexto = (state.data.fotos || []).join("\n");
-
-      const row = [
-        state.data.celular || from,
-        state.data.nombre || "",
-        state.data.tipoGarantia || "",
-        state.data.anioGarantia || "",
-        state.data.montoSolicitado || "",
-        state.data.ubicacion || "",
-        state.data.etapa || "Completado",
-        state.data.fechaContacto || nowMX(),
-        state.data.responsable || "Bot ACV",
-        fotosTexto, // URLs en texto simple
-        "", // Resultado final
-        "", // Observaciones
-      ];
-      await appendLeadRow(row);
-
-      // Construimos el resumen antes de borrar la sesión
-      const resumenLargo = buildLeadSummary(state);
-      delete sessionState[from];
-
-      // Enviamos 2 mensajes:
-      // 1) Mensaje corto de confirmación
-      // 2) Resumen detallado
-      return replyXmlMulti(res, [
-        {
-          body:
-            "✅ Perfecto, ya recibimos las fotos de tu garantía.\n" +
-            "Tu solicitud ha sido registrada con éxito. Un asesor revisará tu información y te contactará muy pronto.",
-        },
-        {
-          body:
-            resumenLargo +
-            "\n🎯 En resumen: tu solicitud quedó registrada y será atendida por un asesor de ACV en breve.",
-        },
-      ]);
-    }
-
-    // Si llega media fuera de contexto del flujo de fotos
-    return replyXml(
-      res,
-      `📸 Recibidas ${validUrls.length} foto(s).\n` +
-        "Si estás en un proceso de solicitud, por favor sigue las instrucciones anteriores o escribe *fotos* para retomar."
-    );
+    state.data["Fotos"] = (state.data["Fotos"] || []).concat(urls);
+    return replyXml(res, `📸 Recibidas ${urls.length} foto(s)`);
   }
 
-  // === ESTADO 0 → Mostrar menú inicial (con logo) ===
-  if (state.step === 0) {
+  // === PASO 0: MENÚ INICIAL / SALUDO ===
+  if (state.step === 0 || msg.includes("hola") || msg.includes("menu")) {
     state.step = 1;
+    const reply =
+      "Hola, soy el asistente virtual de ACV.\n" +
+      "Gracias por contactarnos.\n\n" +
+      "Selecciona una opción:\n" +
+      "1️⃣ Iniciar solicitud de crédito\n" +
+      "2️⃣ Conocer información general";
     return replyXml(
       res,
-      "👋 Hola, soy el asistente virtual de *ACV*.\n\n" +
-        "¿En qué puedo ayudarte hoy?\n" +
-        "1️⃣ Solicitar un crédito con garantía\n" +
-        "2️⃣ Conocer requisitos\n" +
-        "3️⃣ Hablar con un asesor",
-      LOGO_URL || null
+      reply,
+      // Si tienes un logo accesible por URL pública, puedes ponerlo aquí:
+      // "https://acv-leadbot-1.onrender.com/logo-acv.png"
+      null
     );
   }
 
-  // === MENÚ PRINCIPAL (step 1) ===
+  // === PASO 1: ELECCIÓN DEL FLUJO ===
   if (state.step === 1) {
-    if (
-      msgLower === "1" ||
-      msgLower.includes("crédito") ||
-      msgLower.includes("solicitud")
-    ) {
-      if (await hasBlockingLead(from)) {
-        return replyXml(
-          res,
-          "⚠️ Detectamos que ya tienes una solicitud activa con este número.\n" +
-            "Un asesor se pondrá en contacto contigo. Si necesitas algo más, responde *asesor* o *menu*."
-        );
-      }
-      state.flow = "lead_calificado";
+    if (msg === "1" || msg.includes("solicitud")) {
       state.step = 2;
-      state.data = { celular: from };
+      return replyXml(res, "¿Cuál es tu nombre completo?");
+    } else if (msg === "2" || msg.includes("información")) {
+      const info =
+        "💰 Tasa: 3.99% mensual sin comisión.\n" +
+        "📅 Plazo: Desde 3 meses, sin penalización.\n" +
+        "📋 Requisitos: Documentación básica y avalúo físico.\n\n" +
+        "¿Deseas iniciar tu solicitud? (responde Sí o No)";
+      state.step = 1.5;
+      return replyXml(res, info);
+    }
+  }
+
+  // === PASO 1.5: CONFIRMACIÓN DESPUÉS DE INFO GENERAL ===
+  if (state.step === 1.5) {
+    if (msg.startsWith("s")) {
+      state.step = 2;
+      return replyXml(res, "Perfecto 🙌\n¿Cuál es tu nombre completo?");
+    } else if (msg.startsWith("n")) {
+      state.step = 0;
+      delete sessionState[from];
       return replyXml(
         res,
-        "Perfecto 👍\n" +
-          "Primero, cuéntame qué tipo de bien tienes para dejar como garantía:\n" +
-          "1️⃣ Auto o camión\n" +
-          "2️⃣ Maquinaria pesada\n" +
-          "3️⃣ Reloj de alta gama\n" +
-          "4️⃣ Otro"
+        "Gracias por tu interés en ACV. Si más adelante deseas iniciar una solicitud, solo envía 'Hola' o 'Menu'."
+      );
+    } else {
+      return replyXml(
+        res,
+        "Por favor responde 'Sí' si deseas iniciar tu solicitud o 'No' para finalizar."
       );
     }
+  }
 
-    if (
-      msgLower === "2" ||
-      msgLower.includes("requisito") ||
-      msgLower.includes("información")
-    ) {
-      state.flow = "requisitos";
-      state.step = 10;
-      return replyXml(
-        res,
-        "📋 *Requisitos generales para un crédito con garantía ACV:*\n\n" +
-          "💼 Documentos del cliente:\n" +
-          "- Identificación oficial vigente.\n" +
-          "- Comprobante de domicilio reciente.\n" +
-          "- Comprobante de ingresos o actividad.\n\n" +
-          "🚗 Garantía:\n" +
-          "- Auto, maquinaria o reloj en buenas condiciones.\n" +
-          "- Documentos que acrediten propiedad.\n\n" +
-          "💰 Condiciones:\n" +
-          "- Tasa desde 3.99% mensual.\n" +
-          "- Plazos flexibles.\n" +
-          "- Sin penalización por pagos anticipados.\n\n" +
-          "¿Te gustaría iniciar una solicitud ahora? (responde *Sí* o *No*)"
-      );
+  // === PASO 2: NOMBRE ===
+  if (state.step === 2) {
+    state.data["Cliente"] = msg;
+    state.step = 3;
+    return replyXml(res, "¿Cuál es el monto solicitado?");
+  }
+
+  // === PASO 3: MONTO ===
+  if (state.step === 3) {
+    state.data["Monto solicitado"] = msg;
+    state.step = 4;
+    return replyXml(
+      res,
+      "¿Qué tienes para dejar en garantía?\n1️⃣ Auto\n2️⃣ Maquinaria pesada\n3️⃣ Reloj de alta gama"
+    );
+  }
+
+  // === PASO 4: GARANTÍA ===
+  if (state.step === 4) {
+    if (msg.startsWith("1")) state.data["Garantía"] = "Auto";
+    else if (msg.startsWith("2")) state.data["Garantía"] = "Maquinaria";
+    else if (msg.startsWith("3")) state.data["Garantía"] = "Reloj";
+    else state.data["Garantía"] = msg;
+
+    state.step = 5;
+    return replyXml(
+      res,
+      "¿Cómo te enteraste de nosotros?\n1️⃣ Facebook\n2️⃣ Instagram\n3️⃣ Referido\n4️⃣ Búsqueda orgánica\n5️⃣ Otro"
+    );
+  }
+
+  // === PASO 5: PROCEDENCIA DEL LEAD ===
+  if (state.step === 5) {
+    const opciones = {
+      1: "Facebook",
+      2: "Instagram",
+      3: "Referido",
+      4: "Búsqueda orgánica",
+      5: "Otro",
+    };
+    state.data["Procedencia del lead"] = opciones[msg] || msg;
+    state.step = 6;
+    return replyXml(res, "¿En qué estado de la República te encuentras?");
+  }
+
+  // === PASO 6: UBICACIÓN ===
+  if (state.step === 6) {
+    state.data["Ubicación"] = msg;
+    state.step = 7;
+    return replyXml(res, "¿Qué día y hora te gustaría agendar tu cita?");
+  }
+
+  // === PASO 7: CITA + REGISTRO EN SHEETS ===
+  if (state.step === 7) {
+    state.data["Cita"] = msg;
+    state.data["Fecha contacto"] = new Date().toLocaleString("es-MX", {
+      timeZone: "America/Mexico_City",
+    });
+    state.data["Responsable"] = "Bot ACV";
+    state.data["Etapa del cliente"] = "Esperando fotos";
+
+    // Ajusta este arreglo al layout de columnas que tengas en la hoja Leads
+    const row = [
+      from, // Celular
+      state.data["Cliente"],
+      state.data["Garantía"],
+      "", // Año (no lo estamos pidiendo en este flujo sencillo)
+      state.data["Monto solicitado"],
+      state.data["Ubicación"],
+      state.data["Etapa del cliente"],
+      state.data["Fecha contacto"],
+      state.data["Responsable"],
+      "", // Fotos
+      "", // Resultado final
+      "", // Observaciones
+      "", // Resultado (col extra)
+      "", // Observaciones (col extra)
+    ];
+    await appendLeadRow(row);
+
+    let fotosMsg = "";
+    switch (state.data["Garantía"]) {
+      case "Auto":
+        fotosMsg =
+          "Envía 4 fotos de tu vehículo:\n1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Tablero (km)\n4️⃣ Placa";
+        break;
+      case "Maquinaria":
+        fotosMsg =
+          "Envía 4 fotos de tu maquinaria:\n1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Horas de uso\n4️⃣ VIN o serie";
+        break;
+      case "Reloj":
+        fotosMsg =
+          "Envía 4 fotos de tu reloj:\n1️⃣ Carátula\n2️⃣ Pulso\n3️⃣ Corona\n4️⃣ Broche";
+        break;
+      default:
+        fotosMsg =
+          "Envía 4 fotos claras de tu garantía, por favor. Una por mensaje.";
     }
+    state.step = 8;
+    return replyXml(res, fotosMsg);
+  }
 
-    if (
-      msgLower === "3" ||
-      msgLower.includes("asesor") ||
-      msgLower.includes("humano")
-    ) {
-      state.flow = "asesor";
-      state.step = 20;
+  // === PASO 8: ESPERANDO FOTOS (EJEMPLO SIMPLE) ===
+  if (state.step === 8) {
+    const fotosActuales = state.data["Fotos"] || [];
+    if (fotosActuales.length >= 4) {
+      state.data["Etapa del cliente"] = "Completado";
+      await appendLeadRow([
+        from,
+        state.data["Cliente"],
+        state.data["Garantía"],
+        "",
+        state.data["Monto solicitado"],
+        state.data["Ubicación"],
+        state.data["Etapa del cliente"],
+        state.data["Fecha contacto"],
+        state.data["Responsable"],
+        (state.data["Fotos"] || []).join("\n"),
+        "",
+        "",
+        "",
+        "",
+      ]);
+      delete sessionState[from];
       return replyXml(
         res,
-        "Con gusto te ponemos en contacto con un asesor 👨‍💼.\n\n" +
-          "Por favor indícame tu nombre y la ciudad desde donde nos escribes."
+        "✅ Gracias, tu solicitud ha sido registrada. En breve un asesor de ACV se pondrá en contacto contigo."
       );
     }
 
     return replyXml(
       res,
-      "No reconocí la opción.\n\n" +
-        "Por favor responde:\n" +
-        "1️⃣ Solicitar un crédito con garantía\n" +
-        "2️⃣ Conocer requisitos\n" +
-        "3️⃣ Hablar con un asesor"
+      "Aún no recibimos las 4 fotos completas. Por favor continúa enviando las fotos en mensajes separados."
     );
   }
 
-  // === FLUJO 2: CONOCER REQUISITOS (step 10+) ===
-  if (state.flow === "requisitos") {
-    if (state.step === 10) {
-      if (isAffirmative(msg)) {
-        if (await hasBlockingLead(from)) {
-          delete sessionState[from];
-          return replyXml(
-            res,
-            "⚠️ Detectamos que ya tienes una solicitud activa con este número.\n" +
-              "Un asesor se pondrá en contacto contigo. Si necesitas algo más, responde *asesor* o *menu*."
-          );
-        }
-        state.flow = "lead_calificado";
-        state.step = 2;
-        state.data = { celular: from };
-        return replyXml(
-          res,
-          "Perfecto 🙌\n" +
-            "Empecemos con tu solicitud.\n\n" +
-            "¿Qué tipo de bien tienes para dejar como garantía?\n" +
-            "1️⃣ Auto o camión\n" +
-            "2️⃣ Maquinaria pesada\n" +
-            "3️⃣ Reloj de alta gama\n" +
-            "4️⃣ Otro"
-        );
-      }
-      if (isNegative(msg)) {
-        delete sessionState[from];
-        return replyXml(
-          res,
-          "Gracias por tu interés en ACV 😊.\n" +
-            "Si más adelante deseas iniciar una solicitud, solo escribe *crédito* o *menu*."
-        );
-      }
-      return replyXml(
-        res,
-        "¿Te gustaría iniciar una solicitud ahora? (responde *Sí* o *No*)"
-      );
-    }
-  }
-
-  // === FLUJO 3: HABLAR CON UN ASESOR (step 20+) ===
-  if (state.flow === "asesor") {
-    if (state.step === 20) {
-      if (await hasPendingAdvisor(from)) {
-        delete sessionState[from];
-        return replyXml(
-          res,
-          "Ya tenemos una solicitud reciente para que un asesor te contacte ✅\n" +
-            "En breve alguien de nuestro equipo se pondrá en contacto contigo."
-        );
-      }
-
-      state.data = state.data || {};
-      state.data.celular = from;
-      state.data.nombre = msg;
-      state.data.fechaContacto = nowMX();
-      state.data.etapa = "Esperando contacto humano";
-      state.data.responsable = "Asesor ACV";
-
-      const row = [
-        state.data.celular,
-        state.data.nombre,
-        "", // tipoGarantia
-        "", // año
-        "", // monto
-        "", // ubicación
-        state.data.etapa,
-        state.data.fechaContacto,
-        state.data.responsable,
-        "", // fotos
-        "", // resultado final
-        "", // observaciones
-      ];
-      await appendLeadRow(row);
-      delete sessionState[from];
-
-      return replyXml(
-        res,
-        "✅ Gracias, hemos registrado tu solicitud para hablar con un asesor.\n" +
-          "En breve alguien de nuestro equipo se pondrá en contacto contigo."
-      );
-    }
-  }
-
-  // === FLUJO 1: LEAD CALIFICADO (step 2–8) ===
-  if (state.flow === "lead_calificado") {
-    // Comandos de corrección dentro del flujo
-    if (msgLower === "monto") {
-      state.step = 4;
-      return replyXml(
-        res,
-        "Claro 👍 indícame nuevamente el monto que necesitas."
-      );
-    }
-    if (msgLower === "garantia" || msgLower === "garantía") {
-      state.step = 2;
-      return replyXml(
-        res,
-        "Sin problema, volvamos a la garantía:\n" +
-          "1️⃣ Auto o camión\n" +
-          "2️⃣ Maquinaria pesada\n" +
-          "3️⃣ Reloj de alta gama\n" +
-          "4️⃣ Otro"
-      );
-    }
-    if (msgLower === "nombre") {
-      state.step = 6;
-      return replyXml(res, "Dime nuevamente tu nombre completo 🙂");
-    }
-    if (msgLower === "ciudad") {
-      state.step = 7;
-      return replyXml(
-        res,
-        "Indícame de nuevo la ciudad o estado donde te encuentras."
-      );
-    }
-    if (msgLower === "fotos") {
-      state.step = 8;
-      state.data.fotos = [];
-      return replyXml(
-        res,
-        "Perfecto, vamos a reiniciar la parte de fotos.\n" +
-          "Por favor envía 4 fotos de tu garantía (una por mensaje):\n" +
-          "1️⃣ Exterior\n" +
-          "2️⃣ Interior\n" +
-          "3️⃣ Detalle identificativo (placa, serie o característica)\n" +
-          "4️⃣ Vista general"
-      );
-    }
-
-    // Paso 2 – Tipo de garantía
-    if (state.step === 2) {
-      let tipo = "";
-      if (msg.startsWith("1")) tipo = "Auto";
-      else if (msg.startsWith("2")) tipo = "Maquinaria";
-      else if (msg.startsWith("3")) tipo = "Reloj";
-      else if (msg.startsWith("4")) tipo = "Otro";
-      else tipo = msg;
-
-      if (tipo === "Otro") {
-        delete sessionState[from];
-        return replyXml(
-          res,
-          "Por el momento solo operamos con autos, maquinaria o relojes de alta gama.\n" +
-            "Gracias por tu interés en ACV 🙏."
-        );
-      }
-
-      if (!["Auto", "Maquinaria", "Reloj"].includes(tipo)) {
-        return replyXml(
-          res,
-          "No reconocí el tipo de garantía.\n" +
-            "Por favor elige una opción:\n" +
-            "1️⃣ Auto o camión\n" +
-            "2️⃣ Maquinaria pesada\n" +
-            "3️⃣ Reloj de alta gama\n" +
-            "4️⃣ Otro"
-        );
-      }
-
-      state.data.tipoGarantia = tipo;
-      state.step = 3;
-      return replyXml(
-        res,
-        "¿De qué año es tu unidad o equipo? (Ejemplo: 2018, 2020...)"
-      );
-    }
-
-    // Paso 3 – Año del bien
-    if (state.step === 3) {
-      const anio = parseYear(msg);
-      if (!anio) {
-        return replyXml(
-          res,
-          "No pude identificar el año.\n" +
-            "Por favor indícalo en formato de 4 dígitos. Ejemplo: 2018, 2022."
-        );
-      }
-
-      if (!isYearValid(state.data.tipoGarantia, anio)) {
-        delete sessionState[from];
-        return replyXml(
-          res,
-          `Lo sentimos, para este tipo de garantía trabajamos solo con unidades de modelos más recientes.\n` +
-            "Gracias por tu tiempo 🙏."
-        );
-      }
-
-      state.data.anioGarantia = anio;
-      state.step = 4;
-      return replyXml(
-        res,
-        "¿Cuánto dinero necesitas aproximadamente? 💰\n" +
-          "Puedes responder con una cantidad, por ejemplo: 150000"
-      );
-    }
-
-    // Paso 4 – Monto solicitado
-    if (state.step === 4) {
-      const montoNum = parseAmount(msg);
-      if (!montoNum) {
-        return replyXml(
-          res,
-          "No pude entender el monto.\n" +
-            "Por favor indícalo solo con números. Ejemplo: 150000"
-        );
-      }
-
-      if (!isAmountValid(state.data.tipoGarantia, montoNum)) {
-        delete sessionState[from];
-        return replyXml(
-          res,
-          "Por el momento no podemos ofrecer un crédito con ese monto para el tipo de garantía indicado.\n" +
-            "Gracias por tu interés 🙏."
-        );
-      }
-
-      state.data.montoSolicitado = formatCurrency(msg);
-      state.step = 5;
-      return replyXml(
-        res,
-        "¿Estás dispuesto a dejar tu garantía en resguardo durante el crédito? (responde *Sí* o *No*)"
-      );
-    }
-
-    // Paso 5 – Disposición a resguardo
-    if (state.step === 5) {
-      if (isNegative(msg)) {
-        delete sessionState[from];
-        return replyXml(
-          res,
-          "Gracias por tu interés. Nuestros créditos requieren dejar la garantía en resguardo, por lo que no podríamos continuar con la solicitud 🙏."
-        );
-      }
-      if (!isAffirmative(msg)) {
-        return replyXml(
-          res,
-          "No me quedó claro.\n" +
-            "Por favor responde *Sí* si estás dispuesto a dejar la garantía en resguardo, o *No* en caso contrario."
-        );
-      }
-
-      state.step = 6;
-      return replyXml(
-        res,
-        "Perfecto 🙌\n" +
-          "Solo necesito algunos datos básicos.\n\n" +
-          "¿Cuál es tu nombre completo?"
-      );
-    }
-
-    // Paso 6 – Nombre
-    if (state.step === 6) {
-      if (!isValidName(msg)) {
-        return replyXml(
-          res,
-          "Para continuar necesito tu nombre completo (nombre y apellido)."
-        );
-      }
-      state.data.nombre = msg;
-      state.step = 7;
-      return replyXml(res, "¿En qué ciudad o estado te encuentras?");
-    }
-
-    // Paso 7 – Ubicación y guardado inicial del lead (Precalificado)
-    if (state.step === 7) {
-      if (!isValidLocation(msg)) {
-        return replyXml(
-          res,
-          "Para continuar, indícame la ciudad o estado donde te encuentras (por ejemplo: \"Estado de México\" o \"Ciudad de México\")."
-        );
-      }
-
-      state.data.ubicacion = msg;
-      state.data.fechaContacto = nowMX();
-      state.data.etapa = "Precalificado – pendiente de fotos";
-      state.data.responsable = "Bot ACV";
-      state.data.celular = state.data.celular || from;
-
-      const row = [
-        state.data.celular,
-        state.data.nombre,
-        state.data.tipoGarantia,
-        state.data.anioGarantia,
-        state.data.montoSolicitado,
-        state.data.ubicacion,
-        state.data.etapa,
-        state.data.fechaContacto,
-        state.data.responsable,
-        "", // fotos
-        "", // resultado final
-        "", // observaciones
-      ];
-      await appendLeadRow(row);
-
-      state.step = 8;
-      state.data.fotos = [];
-      return replyXml(
-        res,
-        "Perfecto 🙌\n" +
-          "Por último, envía 4 fotos de tu garantía (una por mensaje):\n" +
-          "1️⃣ Exterior\n" +
-          "2️⃣ Interior\n" +
-          "3️⃣ Detalle identificativo (placa, serie o característica)\n" +
-          "4️⃣ Vista general\n\n" +
-          "Si necesitas reiniciar esta parte, puedes escribir *fotos* o ver tu *resumen* con ese comando."
-      );
-    }
-
-    // Paso 8 – se maneja en bloque de MEDIA
-  }
-
-  // === RESPUESTA POR DEFECTO ===
-  return replyXml(
-    res,
-    "No reconocí tu mensaje en el contexto actual.\n" +
-      "Puedes escribir *menu* para volver al inicio o *ayuda* para ver opciones."
-  );
+  return replyXml(res, "Por favor continúa con las instrucciones anteriores.");
 });
 
-// Ruta de prueba
+// ===================== PROXY SEGURO DE FOTOS TWILIO =====================
+app.get("/media", async (req, res) => {
+  try {
+    const originalUrl = req.query.url;
+    if (!originalUrl) {
+      return res.status(400).send("Falta parámetro 'url'.");
+    }
+
+    if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
+      return res
+        .status(500)
+        .send("Proxy de media no configurado (faltan credenciales Twilio).");
+    }
+
+    const authHeader =
+      "Basic " +
+      Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+
+    const twilioResponse = await fetch(originalUrl, {
+      method: "GET",
+      headers: {
+        Authorization: authHeader,
+      },
+    });
+
+    if (!twilioResponse.ok) {
+      console.error(
+        "❌ Error al pedir media a Twilio:",
+        twilioResponse.status,
+        await twilioResponse.text()
+      );
+      return res
+        .status(twilioResponse.status)
+        .send("Error al obtener media desde Twilio.");
+    }
+
+    const contentType =
+      twilioResponse.headers.get("content-type") || "application/octet-stream";
+
+    const arrayBuffer = await twilioResponse.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    res.setHeader("Content-Type", contentType);
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    res.send(buffer);
+  } catch (err) {
+    console.error("❌ Error inesperado en /media:", err);
+    res.status(500).send("Error en el proxy de media.");
+  }
+});
+
+// ===================== RUTA DE PRUEBA =====================
 app.get("/", (req, res) => {
   res
     .status(200)
     .type("text/plain")
-    .send("✅ LeadBot ACV operativo – Flujo Lead Calificado (versión robusta v3).");
+    .send(
+      "✅ LeadBot ACV operativo – Flujo Lead Calificado (versión sencilla + proxy de fotos)."
+    );
 });
 
 app.listen(PORT, () => {
