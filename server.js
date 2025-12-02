@@ -100,6 +100,42 @@ function replyXml(res, message, mediaUrl = null) {
   res.end(xml);
 }
 
+// Horario del CHATBOT (NO humano):
+// - Lunes a viernes: de 18:00 a 09:00
+// - Sábado y domingo: todo el día
+function isWithinBotHours() {
+  const now = new Date();
+
+  const options = {
+    timeZone: "America/Mexico_City",
+    hour12: false,
+    weekday: "short", // lun, mar, mié, jue, vie, sáb, dom
+    hour: "numeric",
+  };
+
+  const parts = new Intl.DateTimeFormat("es-MX", options).formatToParts(now);
+
+  const weekdayPart = parts.find((p) => p.type === "weekday");
+  const hourPart = parts.find((p) => p.type === "hour");
+
+  const dayShort = (weekdayPart?.value || "").toLowerCase(); // ej. "lun"
+  const hour = parseInt(hourPart?.value || "0", 10); // 0–23
+
+  const isWeekend = ["sáb", "sab", "dom"].includes(dayShort);
+  if (isWeekend) {
+    // Bot activo todo el sábado y domingo
+    return true;
+  }
+
+  // Días lunes a viernes: bot activo de 18:00 a 09:00
+  // Es decir:
+  // - Desde las 18:00 (18–23)
+  // - Y desde las 00:00 hasta antes de las 09:00 (0–8)
+  const isNightOrEarly = hour >= 18 || hour < 9;
+
+  return isNightOrEarly;
+}
+
 async function appendLeadRow(rowValues) {
   try {
     await sheets.spreadsheets.values.append({
@@ -232,6 +268,12 @@ async function revisarLeadsPendientesYEnviarRecordatorios() {
   try {
     console.log("⏰ Iniciando revisión de leads pendientes para recordatorio...");
 
+    // Solo enviar recordatorios cuando el bot está activo
+    if (!isWithinBotHours()) {
+      console.log("⏰ Fuera de horario del chatbot, no se envían recordatorios ahora.");
+      return;
+    }
+
     if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_WHATSAPP_FROM) {
       console.warn(
         "⚠️ Recordatorios deshabilitados: faltan credenciales Twilio o TWILIO_WHATSAPP_FROM."
@@ -283,7 +325,6 @@ async function revisarLeadsPendientesYEnviarRecordatorios() {
       }
 
       if (!ultimoRecIso) {
-        // Si nunca se ha guardado un timestamp, usamos la hora actual como referencia inicial
         console.log(
           `ℹ️ Lead sin 'Último recordatorio ISO' (fila ${
             i + 2
@@ -365,6 +406,14 @@ app.post("/", async (req, res) => {
 
   if (!sessionState[from]) sessionState[from] = { step: 0, data: {} };
   const state = sessionState[from];
+
+  // 🔒 Control de horario del chatbot
+  if (!isWithinBotHours()) {
+    return replyXml(
+      res,
+      "Gracias por escribir a ACV. Nuestro horario de atención humana es de lunes a viernes de 9:00 a 18:00 hrs (CDMX).\n\nEn este momento el asistente automático no está disponible. Intenta de nuevo fuera de ese horario o deja tu mensaje y un asesor te contactará."
+    );
+  }
 
   // === COMANDOS GLOBALES BÁSICOS ===
   if (["menu", "inicio", "start"].includes(msg)) {
@@ -741,7 +790,7 @@ app.get("/", (req, res) => {
     .status(200)
     .type("text/plain")
     .send(
-      "✅ LeadBot ACV operativo – Flujo Lead Calificado (filtros + fotos automáticas + recordatorios)."
+      "✅ LeadBot ACV operativo – Flujo Lead Calificado (filtros + fotos automáticas + recordatorios + horario nocturno/fines de semana)."
     );
 });
 
