@@ -104,6 +104,17 @@ function replyXml(res, message, mediaUrl = null) {
 // - Lunes a viernes: de 18:00 a 09:00
 // - Sábado y domingo: todo el día
 function isWithinBotHours() {
+  // 🧪 MODO PRUEBA:
+  // Mientras esté en true, el chatbot estará SIEMPRE activo,
+  // sin importar el día ni la hora.
+  const FORCE_BOT_ON_FOR_TESTING = true; // ← ponlo en false cuando termines de probar
+
+  if (FORCE_BOT_ON_FOR_TESTING) {
+    return true;
+  }
+
+  // ⬇️ Lógica real de horario del bot
+
   const now = new Date();
 
   const options = {
