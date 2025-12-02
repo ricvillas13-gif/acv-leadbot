@@ -11,18 +11,35 @@ const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
 const LEADS_SHEET_NAME = "Leads";
 
-// === TWILIO AUTH PARA PROXY DE FOTOS ===
+// ⚠️ Ajusta esta URL AL LOGO QUE YA PROBASTE EN NAVEGADOR
+const LOGO_ACV_URL =
+  "https://acv-leadbot-1.onrender.com/logo-acv-transparente.png";
+
+// === TWILIO AUTH PARA PROXY DE FOTOS Y MENSAJES SALIENTES ===
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
 const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN || "";
+const TWILIO_WHATSAPP_FROM = process.env.TWILIO_WHATSAPP_FROM || ""; // ej. "whatsapp:+14155238886"
 
 if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) {
   console.warn(
-    "⚠️ TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN no están definidos. /media no funcionará."
+    "⚠️ TWILIO_ACCOUNT_SID o TWILIO_AUTH_TOKEN no están definidos. /media y recordatorios pueden fallar."
+  );
+}
+
+if (!TWILIO_WHATSAPP_FROM) {
+  console.warn(
+    "⚠️ TWILIO_WHATSAPP_FROM no está definido. No se podrán enviar recordatorios automáticos."
   );
 }
 
 // BASE del proxy de media (ajusta si cambias el dominio en Render)
 const BASE_MEDIA_URL = "https://acv-leadbot-1.onrender.com/media?url=";
+
+// === PARÁMETROS DE RECORDATORIOS ===
+// Delays en horas desde el último punto de referencia
+const REMINDER_DELAYS_HOURS = [6, 48]; // 1er y 2o recordatorio
+// Cada cuánto se revisa la hoja para ver a quién recordar (en minutos)
+const REMINDER_INTERVAL_MINUTES = 30;
 
 // === GOOGLE AUTH ===
 let creds;
@@ -91,9 +108,9 @@ async function appendLeadRow(rowValues) {
       valueInputOption: "USER_ENTERED", // permite fórmulas HYPERLINK
       requestBody: { values: [rowValues] },
     });
-    console.log("✅ Lead guardado:", rowValues[1]);
+    console.log("✅ Lead guardado en Sheets:", rowValues[1]);
   } catch (err) {
-    console.error("❌ Error guardando Lead:", err);
+    console.error("❌ Error guardando Lead en Sheets:", err);
   }
 }
 
@@ -108,6 +125,10 @@ function parseMontoToNumber(txt) {
 function evaluarLeadViabilidad(garantia, anioStr, montoStr) {
   const reglas = LEAD_RULES[garantia] || null;
   if (!reglas) {
+    console.log(
+      "ℹ️ Sin reglas específicas para garantía, se marca Viable:",
+      garantia
+    );
     return {
       resultado: "Viable",
       motivo: "Sin reglas específicas para esta garantía",
@@ -168,6 +189,170 @@ function buildFotoHyperlink(url, index) {
   return `=HYPERLINK("${BASE_MEDIA_URL}${encoded}";"Foto ${index}")`;
 }
 
+// === ENVÍO DE MENSAJE WHATSAPP (PARA RECORDATORIOS) ===
+async function sendWhatsAppMessage(to, body) {
+  if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_WHATSAPP_FROM) {
+    console.warn(
+      "⚠️ No se puede enviar WhatsApp: faltan TWILIO_ACCOUNT_SID / AUTH_TOKEN o WHATSAPP_FROM."
+    );
+    return;
+  }
+
+  const url = `https://api.twilio.com/2010-04-01/Accounts/${TWILIO_ACCOUNT_SID}/Messages.json`;
+
+  const params = new URLSearchParams({
+    From: TWILIO_WHATSAPP_FROM,
+    To: to, // ej: "whatsapp:+5217..."
+    Body: body,
+  });
+
+  const authHeader =
+    "Basic " +
+    Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: authHeader,
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: params,
+  });
+
+  if (!resp.ok) {
+    const txt = await resp.text();
+    console.error("❌ Error al enviar WhatsApp desde Twilio:", resp.status, txt);
+  } else {
+    console.log("📣 WhatsApp enviado correctamente a", to);
+  }
+}
+
+// === TAREA PERIÓDICA: RECORDATORIOS A PENDIENTES DE FOTOS ===
+async function revisarLeadsPendientesYEnviarRecordatorios() {
+  try {
+    console.log("⏰ Iniciando revisión de leads pendientes para recordatorio...");
+
+    if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN || !TWILIO_WHATSAPP_FROM) {
+      console.warn(
+        "⚠️ Recordatorios deshabilitados: faltan credenciales Twilio o TWILIO_WHATSAPP_FROM."
+      );
+      return;
+    }
+
+    const range = `${LEADS_SHEET_NAME}!A2:S`; // A..S (19 columnas)
+    const resp = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range,
+    });
+
+    const rows = resp.data.values || [];
+    if (!rows.length) {
+      console.log("ℹ️ No hay filas en Leads para revisar recordatorios.");
+      return;
+    }
+
+    const now = new Date();
+    const nowMs = now.getTime();
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+
+      const celular = row[0] || "";
+      const etapa = row[6] || "";
+      const fotosCrudas = row[9] || "";
+      const resultado = row[14] || "";
+      const recordatoriosStr = row[17] || "0";
+      const ultimoRecIso = row[18] || "";
+
+      // Solo leads: Viable, Precalificado – pendiente de fotos, sin fotos
+      if (
+        etapa !== "Precalificado – pendiente de fotos" ||
+        !resultado.toLowerCase().includes("viable")
+      ) {
+        continue;
+      }
+
+      if (fotosCrudas && fotosCrudas.trim() !== "") {
+        // Ya tiene fotos, no deberíamos recordar
+        continue;
+      }
+
+      const recordatoriosEnviados = parseInt(recordatoriosStr, 10) || 0;
+      if (recordatoriosEnviados >= REMINDER_DELAYS_HOURS.length) {
+        continue; // ya alcanzó el máximo de recordatorios
+      }
+
+      if (!ultimoRecIso) {
+        // Si nunca se ha guardado un timestamp, usamos la hora actual como referencia inicial
+        console.log(
+          `ℹ️ Lead sin 'Último recordatorio ISO' (fila ${
+            i + 2
+          }), se inicializa ahora.`
+        );
+        const rowNumber = i + 2;
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SHEET_ID,
+          range: `${LEADS_SHEET_NAME}!S${rowNumber}:S${rowNumber}`, // Columna S = 19
+          valueInputOption: "RAW",
+          requestBody: { values: [[now.toISOString()]] },
+        });
+        continue;
+      }
+
+      const last = new Date(ultimoRecIso);
+      if (isNaN(last.getTime())) {
+        console.warn(
+          `⚠️ 'Último recordatorio ISO' inválido en fila ${
+            i + 2
+          }: ${ultimoRecIso}`
+        );
+        continue;
+      }
+
+      const diffHours = (nowMs - last.getTime()) / (1000 * 60 * 60);
+      const delayNeeded = REMINDER_DELAYS_HOURS[recordatoriosEnviados];
+
+      if (diffHours < delayNeeded) {
+        continue; // aún no toca recordatorio
+      }
+
+      // Toca enviar siguiente recordatorio
+      const numeroRec = recordatoriosEnviados + 1;
+      const mensajeRec =
+        numeroRec === 1
+          ? "Hola de nuevo, soy el asistente virtual de ACV. Tu solicitud está preaprobada, pero aún no recibimos las fotos de tu garantía. Cuando puedas, envía al menos 4 fotos para que un asesor pueda revisar tu crédito. 🙌"
+          : "Solo para confirmar si aún te interesa tu crédito con ACV. Seguimos pendientes de las fotos de tu garantía. Si ya no te interesa, puedes responder 'No' y cerramos tu solicitud sin problema.";
+
+      console.log(
+        `📌 Enviando recordatorio #${numeroRec} a ${celular} (fila ${
+          i + 2
+        }). diffHours=${diffHours.toFixed(2)}h`
+      );
+
+      await sendWhatsAppMessage(celular, mensajeRec);
+
+      // Actualizar contador y timestamp
+      const rowNumber = i + 2;
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `${LEADS_SHEET_NAME}!R${rowNumber}:S${rowNumber}`, // R=18, S=19
+        valueInputOption: "RAW",
+        requestBody: {
+          values: [[String(numeroRec), now.toISOString()]],
+        },
+      });
+
+      console.log(
+        `✅ Recordatorio #${numeroRec} registrado en fila ${rowNumber}.`
+      );
+    }
+
+    console.log("✅ Revisión de recordatorios finalizada.");
+  } catch (err) {
+    console.error("❌ Error en revisarLeadsPendientesYEnviarRecordatorios:", err);
+  }
+}
+
 // === FLUJO PRINCIPAL TWILIO WEBHOOK ===
 app.post("/", async (req, res) => {
   const body = req.body;
@@ -196,6 +381,10 @@ app.post("/", async (req, res) => {
     state.data.fotos = (state.data.fotos || []).concat(urls);
     const totalFotos = state.data.fotos.length;
 
+    console.log(
+      `📷 Recibidas ${urls.length} nuevas foto(s) de ${from}. Total acumuladas: ${totalFotos}.`
+    );
+
     // Si ya tenemos al menos 4 fotos, registramos fila "Completado"
     if (totalFotos >= 4) {
       const fotosUrls = state.data.fotos.slice(0, 4); // sólo primeras 4
@@ -206,7 +395,7 @@ app.post("/", async (req, res) => {
       const foto3 = buildFotoHyperlink(fotosUrls[2], 3);
       const foto4 = buildFotoHyperlink(fotosUrls[3], 4);
 
-      const fechaContacto =
+      const fechaTexto =
         state.data["Fecha contacto"] ||
         new Date().toLocaleString("es-MX", {
           timeZone: "America/Mexico_City",
@@ -220,7 +409,7 @@ app.post("/", async (req, res) => {
         state.data["Monto solicitado"] || "",
         state.data["Ubicación"] || "",
         "Completado", // Etapa del cliente
-        fechaContacto,
+        fechaTexto,
         "Bot ACV", // Responsable
         fotosCell, // Fotos (crudo)
         foto1,
@@ -230,6 +419,8 @@ app.post("/", async (req, res) => {
         "Viable – completado", // Resultado
         "Solicitud completa con fotos", // Motivo
         "", // Notas (para asesores)
+        "", // Recordatorios enviados
+        "", // Último recordatorio ISO
       ];
 
       await appendLeadRow(rowCompletado);
@@ -257,7 +448,7 @@ app.post("/", async (req, res) => {
       "1️⃣ Iniciar solicitud de crédito\n" +
       "2️⃣ Conocer requisitos e información general\n" +
       "3️⃣ Hablar con un asesor";
-    return replyXml(res, reply);
+    return replyXml(res, reply, LOGO_ACV_URL);
   }
 
   // === PASO 1: ELECCIÓN DEL FLUJO ===
@@ -278,10 +469,10 @@ app.post("/", async (req, res) => {
       state.step = 1.5;
       return replyXml(res, info);
     } else if (msg === "3" || msg.includes("asesor")) {
-      // Registramos lead mínimo para "Esperando contacto humano"
-      const fecha = new Date().toLocaleString("es-MX", {
+      const fechaTexto = new Date().toLocaleString("es-MX", {
         timeZone: "America/Mexico_City",
       });
+
       const rowAsesor = [
         from, // Celular
         state.data["Cliente"] || "", // si ya teníamos nombre
@@ -290,7 +481,7 @@ app.post("/", async (req, res) => {
         state.data["Monto solicitado"] || "",
         state.data["Ubicación"] || "",
         "Esperando contacto humano", // Etapa del cliente
-        fecha,
+        fechaTexto,
         "Asesor ACV", // Responsable
         "", // Fotos
         "", // Foto 1
@@ -300,6 +491,8 @@ app.post("/", async (req, res) => {
         "Pendiente", // Resultado
         "Cliente pidió hablar con asesor", // Motivo
         "", // Notas
+        "", // Recordatorios enviados
+        "", // Último recordatorio ISO
       ];
       await appendLeadRow(rowAsesor);
       delete sessionState[from];
@@ -375,15 +568,25 @@ app.post("/", async (req, res) => {
   // === PASO 6: UBICACIÓN + EVALUAR VIABILIDAD ===
   if (state.step === 6) {
     state.data["Ubicación"] = rawMsg.trim();
-    const fechaContacto = new Date().toLocaleString("es-MX", {
+
+    const now = new Date();
+    const fechaTexto = now.toLocaleString("es-MX", {
       timeZone: "America/Mexico_City",
     });
-    state.data["Fecha contacto"] = fechaContacto;
+    const nowIso = now.toISOString();
+
+    state.data["Fecha contacto"] = fechaTexto;
 
     const evalResult = evaluarLeadViabilidad(
       state.data["Garantía"],
       state.data["Año"],
       state.data["Monto solicitado"]
+    );
+
+    console.log(
+      `🧮 Evaluación de viabilidad para ${from}:`,
+      evalResult.resultado,
+      evalResult.motivo
     );
 
     if (evalResult.resultado === "No viable") {
@@ -395,7 +598,7 @@ app.post("/", async (req, res) => {
         state.data["Monto solicitado"] || "",
         state.data["Ubicación"] || "",
         "No viable", // Etapa del cliente
-        fechaContacto,
+        fechaTexto,
         "Bot ACV",
         "", // Fotos
         "", // Foto 1
@@ -405,6 +608,8 @@ app.post("/", async (req, res) => {
         "No viable", // Resultado
         evalResult.motivo, // Motivo
         "", // Notas
+        "", // Recordatorios enviados
+        "", // Último recordatorio ISO
       ];
       await appendLeadRow(rowNoViable);
       delete sessionState[from];
@@ -423,7 +628,7 @@ app.post("/", async (req, res) => {
       state.data["Monto solicitado"] || "",
       state.data["Ubicación"] || "",
       "Precalificado – pendiente de fotos", // Etapa del cliente
-      fechaContacto,
+      fechaTexto,
       "Bot ACV", // Responsable
       "", // Fotos
       "", // Foto 1
@@ -433,6 +638,8 @@ app.post("/", async (req, res) => {
       "Viable", // Resultado
       evalResult.motivo, // Motivo
       "", // Notas
+      "0", // Recordatorios enviados
+      nowIso, // Último recordatorio ISO (punto de referencia)
     ];
     await appendLeadRow(rowViable);
 
@@ -534,10 +741,22 @@ app.get("/", (req, res) => {
     .status(200)
     .type("text/plain")
     .send(
-      "✅ LeadBot ACV operativo – Flujo Lead Calificado (filtros + fotos automáticas)."
+      "✅ LeadBot ACV operativo – Flujo Lead Calificado (filtros + fotos automáticas + recordatorios)."
     );
 });
 
 app.listen(PORT, () => {
   console.log(`🚀 LeadBot ACV ejecutándose en el puerto ${PORT}`);
+  console.log(
+    `⏰ Recordatorios programados cada ${REMINDER_INTERVAL_MINUTES} minutos (delays: ${REMINDER_DELAYS_HOURS.join(
+      ", "
+    )} horas).`
+  );
 });
+
+// ===================== PROGRAMAR TAREA PERIÓDICA DE RECORDATORIOS =====================
+setInterval(() => {
+  revisarLeadsPendientesYEnviarRecordatorios().catch((err) =>
+    console.error("❌ Error en ejecución periódica de recordatorios:", err)
+  );
+}, REMINDER_INTERVAL_MINUTES * 60 * 1000);
