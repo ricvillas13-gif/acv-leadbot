@@ -4,9 +4,11 @@ import { google } from "googleapis";
 import he from "he"; // escapador HTML seguro
 
 const app = express();
+
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
-// 👉 vuelve a activar la carpeta /public:
+
+// 👉 Servir archivos estáticos (logo) desde /public
 app.use(express.static("public"));
 
 const PORT = process.env.PORT || 10000;
@@ -109,13 +111,11 @@ function isWithinBotHours() {
   // 🧪 MODO PRUEBA:
   // Mientras esté en true, el chatbot estará SIEMPRE activo,
   // sin importar el día ni la hora.
-  const FORCE_BOT_ON_FOR_TESTING = true; // ← ponlo en false cuando termines de probar
+  const FORCE_BOT_ON_FOR_TESTING = false; // ← ponlo en true para probar en cualquier horario
 
   if (FORCE_BOT_ON_FOR_TESTING) {
     return true;
   }
-
-  // ⬇️ Lógica real de horario del bot
 
   const now = new Date();
 
@@ -141,7 +141,6 @@ function isWithinBotHours() {
   }
 
   // Días lunes a viernes: bot activo de 18:00 a 09:00
-  // Es decir:
   // - Desde las 18:00 (18–23)
   // - Y desde las 00:00 hasta antes de las 09:00 (0–8)
   const isNightOrEarly = hour >= 18 || hour < 9;
@@ -283,7 +282,9 @@ async function revisarLeadsPendientesYEnviarRecordatorios() {
 
     // Solo enviar recordatorios cuando el bot está activo
     if (!isWithinBotHours()) {
-      console.log("⏰ Fuera de horario del chatbot, no se envían recordatorios ahora.");
+      console.log(
+        "⏰ Fuera de horario del chatbot, no se envían recordatorios ahora."
+      );
       return;
     }
 
@@ -449,7 +450,6 @@ app.post("/", async (req, res) => {
 
     // Si ya tenemos al menos 4 fotos, registramos fila "Completado"
     if (totalFotos >= 4) {
-      if (totalFotos >= 4) {
       const fotosUrls = state.data.fotos.slice(0, 4); // sólo primeras 4
       const fotosCell = fotosUrls.join("\n");
 
@@ -505,13 +505,6 @@ app.post("/", async (req, res) => {
       return replyXml(res, resumen);
     }
 
-
-    
-        res,
-        "✅ Gracias, tu solicitud ha sido registrada con tus fotos. En breve un asesor de ACV se pondrá en contacto contigo."
-      );
-    }
-
     return replyXml(
       res,
       `📸 Recibidas ${urls.length} foto(s). Llevo registradas ${totalFotos}. Envía al menos 4 fotos en total.`
@@ -541,7 +534,7 @@ app.post("/", async (req, res) => {
         "📋 Requisitos generales ACV:\n" +
         "• Identificación oficial vigente.\n" +
         "• Comprobante de domicilio.\n" +
-        "• Documentos de propiedad de la garantía (tarjeta de circulación, factura, etc.).\n" +
+        "• Documentos de propiedad de la garantía.\n" +
         "• Avalúo físico del bien.\n\n" +
         "💰 Tasa desde 3.99% mensual sin comisión de apertura.\n" +
         "📅 Plazos flexibles desde 3 meses.\n\n" +
@@ -821,7 +814,7 @@ app.get("/", (req, res) => {
     .status(200)
     .type("text/plain")
     .send(
-      "✅ LeadBot ACV operativo – Flujo Lead Calificado (filtros + fotos automáticas + recordatorios + horario nocturno/fines de semana)."
+      "✅ LeadBot ACV operativo – Flujo Lead Calificado (filtros + fotos automáticas + recordatorios + horario nocturno/fines de semana + resumen final)."
     );
 });
 
