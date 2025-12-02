@@ -6,6 +6,8 @@ import he from "he"; // escapador HTML seguro
 const app = express();
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+// 👉 vuelve a activar la carpeta /public:
+app.use(express.static("public"));
 
 const PORT = process.env.PORT || 10000;
 const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
@@ -13,7 +15,7 @@ const LEADS_SHEET_NAME = "Leads";
 
 // ⚠️ Ajusta esta URL AL LOGO QUE YA PROBASTE EN NAVEGADOR
 const LOGO_ACV_URL =
-  "https://acv-leadbot-1.onrender.com/logo-acv-transparente.png";
+  "https://acv-leadbot-1.onrender.com/logo-acv.png";
 
 // === TWILIO AUTH PARA PROXY DE FOTOS Y MENSAJES SALIENTES ===
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
