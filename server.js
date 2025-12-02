@@ -111,7 +111,7 @@ function isWithinBotHours() {
   // 🧪 MODO PRUEBA:
   // Mientras esté en true, el chatbot estará SIEMPRE activo,
   // sin importar el día ni la hora.
-  const FORCE_BOT_ON_FOR_TESTING = false; // ← ponlo en true para probar en cualquier horario
+  const FORCE_BOT_ON_FOR_TESTING = true; // ← ponlo en true para probar en cualquier horario
 
   if (FORCE_BOT_ON_FOR_TESTING) {
     return true;
