@@ -449,6 +449,7 @@ app.post("/", async (req, res) => {
 
     // Si ya tenemos al menos 4 fotos, registramos fila "Completado"
     if (totalFotos >= 4) {
+      if (totalFotos >= 4) {
       const fotosUrls = state.data.fotos.slice(0, 4); // sólo primeras 4
       const fotosCell = fotosUrls.join("\n");
 
@@ -488,7 +489,24 @@ app.post("/", async (req, res) => {
       await appendLeadRow(rowCompletado);
       delete sessionState[from];
 
-      return replyXml(
+      // 🔎 RESUMEN PARA EL PROSPECTO
+      const celularLimpio = from.replace("whatsapp:", "");
+      const resumen =
+        "✅ Gracias, tu solicitud ha sido registrada con tus fotos.\n\n" +
+        "📄 *Resumen de tu solicitud:*\n" +
+        `• Nombre: ${state.data["Cliente"] || "Sin dato"}\n` +
+        `• Celular: ${celularLimpio}\n` +
+        `• Garantía: ${state.data["Garantía"] || "Sin dato"}\n` +
+        `• Año: ${state.data["Año"] || "Sin dato"}\n` +
+        `• Monto: ${state.data["Monto solicitado"] || "Sin dato"}\n` +
+        `• Ubicación: ${state.data["Ubicación"] || "Sin dato"}\n\n` +
+        "En breve un asesor de ACV se pondrá en contacto contigo. 🙌";
+
+      return replyXml(res, resumen);
+    }
+
+
+    
         res,
         "✅ Gracias, tu solicitud ha sido registrada con tus fotos. En breve un asesor de ACV se pondrá en contacto contigo."
       );
