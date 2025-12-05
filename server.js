@@ -16,8 +16,7 @@ const SHEET_ID = "1OGtZIFiEZWI8Tws1X_tZyEfgiEnVNlGcJay-Dg6-N_o";
 const LEADS_SHEET_NAME = "Leads";
 
 // ⚠️ Ajusta esta URL AL LOGO QUE YA PROBASTE EN NAVEGADOR
-const LOGO_ACV_URL =
-  "https://acv-leadbot-1.onrender.com/logo-acv.png";
+const LOGO_ACV_URL = "https://acv-leadbot-1.onrender.com/logo-acv.png";
 
 // === TWILIO AUTH PARA PROXY DE FOTOS Y MENSAJES SALIENTES ===
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID || "";
@@ -81,6 +80,11 @@ const LEAD_RULES = {
     minAmount: 50000,
     maxAmount: 1000000,
   },
+  "Tractocamión o camión": {
+    minYear: 2010,
+    minAmount: 100000,
+    maxAmount: 5000000,
+  },
 };
 
 // === UTILS ===
@@ -111,7 +115,7 @@ function isWithinBotHours() {
   // 🧪 MODO PRUEBA:
   // Mientras esté en true, el chatbot estará SIEMPRE activo,
   // sin importar el día ni la hora.
-  const FORCE_BOT_ON_FOR_TESTING = true; // ← ponlo en true para probar en cualquier horario
+  const FORCE_BOT_ON_FOR_TESTING = true; // ← ponlo en false cuando ya no quieras pruebas 24/7
 
   if (FORCE_BOT_ON_FOR_TESTING) {
     return true;
@@ -141,8 +145,6 @@ function isWithinBotHours() {
   }
 
   // Días lunes a viernes: bot activo de 18:00 a 09:00
-  // - Desde las 18:00 (18–23)
-  // - Y desde las 00:00 hasta antes de las 09:00 (0–8)
   const isNightOrEarly = hour >= 18 || hour < 9;
 
   return isNightOrEarly;
@@ -295,7 +297,7 @@ async function revisarLeadsPendientesYEnviarRecordatorios() {
       return;
     }
 
-    const range = `${LEADS_SHEET_NAME}!A2:S`; // A..S (19 columnas)
+    const range = `${LEADS_SHEET_NAME}!A2:S`; // A..S (19 columnas actuales)
     const resp = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
       range,
@@ -484,6 +486,7 @@ app.post("/", async (req, res) => {
         "", // Notas (para asesores)
         "", // Recordatorios enviados
         "", // Último recordatorio ISO
+        state.data["DescripcionGarantia"] || "", // Descripción garantía (nueva última columna)
       ];
 
       await appendLeadRow(rowCompletado);
@@ -498,6 +501,9 @@ app.post("/", async (req, res) => {
         `• Celular: ${celularLimpio}\n` +
         `• Garantía: ${state.data["Garantía"] || "Sin dato"}\n` +
         `• Año: ${state.data["Año"] || "Sin dato"}\n` +
+        `• Versión / descripción: ${
+          state.data["DescripcionGarantia"] || "Sin dato"
+        }\n` +
         `• Monto: ${state.data["Monto solicitado"] || "Sin dato"}\n` +
         `• Ubicación: ${state.data["Ubicación"] || "Sin dato"}\n\n` +
         "En breve un asesor de ACV se pondrá en contacto contigo. 🙌";
@@ -529,15 +535,23 @@ app.post("/", async (req, res) => {
     if (msg === "1" || msg.includes("solicitud")) {
       state.step = 2;
       return replyXml(res, "Perfecto 🙌\n¿Cuál es tu nombre completo?");
-    } else if (msg === "2" || msg.includes("requisito") || msg.includes("información")) {
+    } else if (
+      msg === "2" ||
+      msg.includes("requisito") ||
+      msg.includes("información")
+    ) {
       const info =
         "📋 Requisitos generales ACV:\n" +
         "• Identificación oficial vigente.\n" +
         "• Comprobante de domicilio.\n" +
         "• Documentos de propiedad de la garantía.\n" +
         "• Avalúo físico del bien.\n\n" +
-        "💰 Tasa desde 3.99% mensual sin comisión de apertura.\n" +
-        "📅 Plazos flexibles desde 3 meses.\n\n" +
+        "💰 Condiciones del crédito ACV:\n" +
+        "• Tasa desde 3.99% mensual.\n" +
+        "• Intereses calculados sobre el saldo insoluto del crédito.\n" +
+        "• Renovación automática del plazo cada 3 meses.\n" +
+        "• Sin penalización por pagos anticipados o liquidación total.\n" +
+        "• Plazos flexibles desde 3 meses.\n\n" +
         "¿Deseas iniciar tu solicitud? (responde Sí o No)";
       state.step = 1.5;
       return replyXml(res, info);
@@ -566,6 +580,7 @@ app.post("/", async (req, res) => {
         "", // Notas
         "", // Recordatorios enviados
         "", // Último recordatorio ISO
+        state.data["DescripcionGarantia"] || "", // Descripción garantía
       ];
       await appendLeadRow(rowAsesor);
       delete sessionState[from];
@@ -604,7 +619,10 @@ app.post("/", async (req, res) => {
   if (state.step === 2) {
     state.data["Cliente"] = rawMsg.trim();
     state.step = 3;
-    return replyXml(res, "¿Cuál es el monto que deseas solicitar? (por ejemplo: 200000)");
+    return replyXml(
+      res,
+      "¿Cuál es el monto que deseas solicitar? (por ejemplo: 200000)"
+    );
   }
 
   // === PASO 3: MONTO ===
@@ -613,7 +631,12 @@ app.post("/", async (req, res) => {
     state.step = 4;
     return replyXml(
       res,
-      "¿Qué tienes para dejar en garantía?\n1️⃣ Auto\n2️⃣ Maquinaria pesada\n3️⃣ Reloj de alta gama\n\nO descríbelo brevemente."
+      "¿Qué tienes para dejar en garantía?\n" +
+        "1️⃣ Auto\n" +
+        "2️⃣ Maquinaria pesada\n" +
+        "3️⃣ Reloj de alta gama\n" +
+        "4️⃣ Tractocamión o camión\n\n" +
+        "O descríbelo brevemente."
     );
   }
 
@@ -622,6 +645,8 @@ app.post("/", async (req, res) => {
     if (msg.startsWith("1")) state.data["Garantía"] = "Auto";
     else if (msg.startsWith("2")) state.data["Garantía"] = "Maquinaria";
     else if (msg.startsWith("3")) state.data["Garantía"] = "Reloj";
+    else if (msg.startsWith("4"))
+      state.data["Garantía"] = "Tractocamión o camión";
     else state.data["Garantía"] = rawMsg.trim();
 
     state.step = 5;
@@ -634,12 +659,28 @@ app.post("/", async (req, res) => {
     state.step = 6;
     return replyXml(
       res,
+      "Perfecto. Ahora indícame la versión o características principales de tu garantía.\n\n" +
+        "Ejemplos:\n" +
+        "• Auto: Mazda 3 i Touring automático\n" +
+        "• Tractocamión: Freightliner Cascadia 450HP\n" +
+        "• Maquinaria: Retroexcavadora CAT 420F\n" +
+        "• Reloj: Modelo y serie\n\n" +
+        "Escríbelo en un solo mensaje."
+    );
+  }
+
+  // === PASO 6: DESCRIPCIÓN / VERSIÓN DE LA GARANTÍA ===
+  if (state.step === 6) {
+    state.data["DescripcionGarantia"] = rawMsg.trim();
+    state.step = 7;
+    return replyXml(
+      res,
       "¿En qué estado o ciudad de la República te encuentras? (por ejemplo: Estado de México)"
     );
   }
 
-  // === PASO 6: UBICACIÓN + EVALUAR VIABILIDAD ===
-  if (state.step === 6) {
+  // === PASO 7: UBICACIÓN + EVALUAR VIABILIDAD ===
+  if (state.step === 7) {
     state.data["Ubicación"] = rawMsg.trim();
 
     const now = new Date();
@@ -683,6 +724,7 @@ app.post("/", async (req, res) => {
         "", // Notas
         "", // Recordatorios enviados
         "", // Último recordatorio ISO
+        state.data["DescripcionGarantia"] || "", // Descripción garantía
       ];
       await appendLeadRow(rowNoViable);
       delete sessionState[from];
@@ -713,6 +755,7 @@ app.post("/", async (req, res) => {
       "", // Notas
       "0", // Recordatorios enviados
       nowIso, // Último recordatorio ISO (punto de referencia)
+      state.data["DescripcionGarantia"] || "", // Descripción garantía
     ];
     await appendLeadRow(rowViable);
 
@@ -723,19 +766,44 @@ app.post("/", async (req, res) => {
     switch (state.data["Garantía"]) {
       case "Auto":
         fotosMsg =
-          "Tu solicitud es viable ✅\n\nPor favor envía 4 fotos de tu vehículo, pueden ir en uno o varios mensajes:\n1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Tablero (km)\n4️⃣ Placa";
+          "Tu solicitud es viable ✅\n\n" +
+          "Envía 4 fotos de tu vehículo (pueden ir en uno o varios mensajes):\n" +
+          "1️⃣ Exterior\n" +
+          "2️⃣ Interior\n" +
+          "3️⃣ Tablero — asegúrate que se vea claramente el kilometraje\n" +
+          "4️⃣ Placa";
+        break;
+      case "Tractocamión o camión":
+        fotosMsg =
+          "Tu solicitud es viable ✅\n\n" +
+          "Envía 4 fotos de tu tractocamión o camión:\n" +
+          "1️⃣ Exterior (vista lateral o frontal)\n" +
+          "2️⃣ Interior de la cabina\n" +
+          "3️⃣ Tablero — asegúrate que se vea claramente el kilometraje\n" +
+          "4️⃣ Número de serie / VIN o placa";
         break;
       case "Maquinaria":
         fotosMsg =
-          "Tu solicitud es viable ✅\n\nEnvía 4 fotos de tu maquinaria:\n1️⃣ Exterior\n2️⃣ Interior\n3️⃣ Horas de uso\n4️⃣ VIN o serie";
+          "Tu solicitud es viable ✅\n\n" +
+          "Envía 4 fotos de tu maquinaria:\n" +
+          "1️⃣ Exterior\n" +
+          "2️⃣ Interior o cabina\n" +
+          "3️⃣ Horas de uso en el odómetro/contador\n" +
+          "4️⃣ VIN o serie";
         break;
       case "Reloj":
         fotosMsg =
-          "Tu solicitud es viable ✅\n\nEnvía 4 fotos de tu reloj:\n1️⃣ Carátula\n2️⃣ Pulso\n3️⃣ Corona\n4️⃣ Broche";
+          "Tu solicitud es viable ✅\n\n" +
+          "Envía 4 fotos de tu reloj:\n" +
+          "1️⃣ Carátula\n" +
+          "2️⃣ Pulso\n" +
+          "3️⃣ Corona\n" +
+          "4️⃣ Broche";
         break;
       default:
         fotosMsg =
-          "Tu solicitud es viable ✅\n\nEnvía al menos 4 fotos claras de tu garantía. Pueden ir en uno o varios mensajes.";
+          "Tu solicitud es viable ✅\n\n" +
+          "Envía al menos 4 fotos claras de tu garantía. Pueden ir en uno o varios mensajes.";
     }
 
     return replyXml(res, fotosMsg);
@@ -773,7 +841,9 @@ app.get("/media", async (req, res) => {
 
     const authHeader =
       "Basic " +
-      Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString("base64");
+      Buffer.from(`${TWILIO_ACCOUNT_SID}:${TWILIO_AUTH_TOKEN}`).toString(
+        "base64"
+      );
 
     const twilioResponse = await fetch(originalUrl, {
       method: "GET",
@@ -814,7 +884,7 @@ app.get("/", (req, res) => {
     .status(200)
     .type("text/plain")
     .send(
-      "✅ LeadBot ACV operativo – Flujo Lead Calificado (filtros + fotos automáticas + recordatorios + horario nocturno/fines de semana + resumen final)."
+      "✅ LeadBot ACV operativo – Flujo Lead Calificado (filtros + fotos automáticas + recordatorios + horario nocturno/fines de semana + resumen final + descripción de garantía + tractocamión/camión)."
     );
 });
 
