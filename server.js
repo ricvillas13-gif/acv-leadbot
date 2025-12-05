@@ -549,7 +549,7 @@ app.post("/", async (req, res) => {
         "💰 Condiciones del crédito ACV:\n" +
         "• Tasa desde 3.99% mensual.\n" +
         "• Intereses calculados sobre el saldo insoluto del crédito.\n" +
-        "• Renovación automática del plazo cada 3 meses.\n" +
+        "• Posibilidad de renovar el plazo cada 3 meses, a solicitud del cliente y sujeto a políticas de ACV.\n" +
         "• Sin penalización por pagos anticipados o liquidación total.\n" +
         "• Plazos flexibles desde 3 meses.\n\n" +
         "¿Deseas iniciar tu solicitud? (responde Sí o No)";
